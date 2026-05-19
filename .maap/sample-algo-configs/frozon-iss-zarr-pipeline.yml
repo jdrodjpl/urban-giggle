@@ -1,6 +1,6 @@
 algorithm_description: Frozon ISS Zarr Pipeline — orchestrates a single Zarr ingest worker job and STAC cataloging.
 algorithm_name: frozon-iss-zarr-pipeline
-algorithm_version: zarr-pipeline-v0.0.1
+algorithm_version: main
 build_command: urban-giggle/.maap/zarr-pipeline/build.sh
 disk_space: 20GB
 docker_container_url: mas.maap-project.org/root/maap-workspaces/custom_images/maap_base:v4.2.0
