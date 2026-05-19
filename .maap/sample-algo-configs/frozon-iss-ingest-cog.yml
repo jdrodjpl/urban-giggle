@@ -13,6 +13,14 @@ inputs:
     name: input_s3
     required: false
   - default: none
+    description: HTTPS URL of the input TIFF (Earthdata-protected; requires earthdata_token_secret_name)
+    name: input_https
+    required: false
+  - default: ""
+    description: MAAP secret name holding an EDL bearer token (required for input_https)
+    name: earthdata_token_secret_name
+    required: false
+  - default: none
     description: STAC collection ID
     name: collection_id
     required: true

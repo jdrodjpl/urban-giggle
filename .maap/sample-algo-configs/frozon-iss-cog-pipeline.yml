@@ -96,6 +96,42 @@ inputs:
     description: Local working directory for the orchestrator
     name: local_download_path
     required: false
+  - default: s3
+    description: Input source type ('s3' uses input_s3_prefix; 'cmr' uses cmr_* params)
+    name: input_source_type
+    required: false
+  - default: ""
+    description: CMR collection short_name (required when input_source_type=cmr)
+    name: cmr_short_name
+    required: false
+  - default: ""
+    description: CMR collection version
+    name: cmr_version
+    required: false
+  - default: ""
+    description: ISO datetime lower bound for CMR temporal filter (e.g. 2024-01-01)
+    name: cmr_temporal_start
+    required: false
+  - default: ""
+    description: ISO datetime upper bound for CMR temporal filter
+    name: cmr_temporal_end
+    required: false
+  - default: ""
+    description: CMR bbox as 'west,south,east,north' (degrees)
+    name: cmr_bbox
+    required: false
+  - default: ""
+    description: Comma-separated CMR granule UR identifiers (overrides temporal/bbox)
+    name: cmr_granule_ids
+    required: false
+  - default: "true"
+    description: Prefer HTTPS granule URLs (requires EDL token) vs. in-region S3 links
+    name: cmr_prefer_https
+    required: false
+  - default: ""
+    description: MAAP secret name holding the EDL bearer token (or username\npassword)
+    name: earthdata_token_secret_name
+    required: false
 queue: maap-dps-worker-8gb
 repository_url: https://github.com/jdrodjpl/urban-giggle.git
 run_command: urban-giggle/.maap/cog-pipeline/run-cog-pipeline.sh

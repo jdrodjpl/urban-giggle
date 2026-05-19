@@ -37,6 +37,15 @@ post_stac_webhook_token_secret_name=$(jq -r '.params.post_stac_webhook_token_sec
 filter_pattern=$(jq -r '.params.filter // empty' _job.json)
 limit=$(jq -r '.params.limit // empty' _job.json)
 local_download_path=$(jq -r '.params.local_download_path // "output"' _job.json)
+input_source_type=$(jq -r '.params.input_source_type // "s3"' _job.json)
+cmr_short_name=$(jq -r '.params.cmr_short_name // empty' _job.json)
+cmr_version=$(jq -r '.params.cmr_version // empty' _job.json)
+cmr_temporal_start=$(jq -r '.params.cmr_temporal_start // empty' _job.json)
+cmr_temporal_end=$(jq -r '.params.cmr_temporal_end // empty' _job.json)
+cmr_bbox=$(jq -r '.params.cmr_bbox // empty' _job.json)
+cmr_granule_ids=$(jq -r '.params.cmr_granule_ids // empty' _job.json)
+cmr_prefer_https=$(jq -r '.params.cmr_prefer_https // "true"' _job.json)
+earthdata_token_secret_name=$(jq -r '.params.earthdata_token_secret_name // empty' _job.json)
 
 default_queue=$(jq -r '.job_info.job_queue // empty' _job.json)
 job_queue=$(jq -r '.params.job_queue // empty' _job.json)
@@ -119,6 +128,34 @@ if [[ -n "${limit}" ]]; then
 fi
 if [[ -n "${local_download_path}" && "${local_download_path}" != "output" ]]; then
     args+=(--local-download-path "${local_download_path}")
+fi
+
+args+=(--input-source-type "${input_source_type}")
+if [[ -n "${cmr_short_name}" ]]; then
+    args+=(--cmr-short-name "${cmr_short_name}")
+fi
+if [[ -n "${cmr_version}" ]]; then
+    args+=(--cmr-version "${cmr_version}")
+fi
+if [[ -n "${cmr_temporal_start}" ]]; then
+    args+=(--cmr-temporal-start "${cmr_temporal_start}")
+fi
+if [[ -n "${cmr_temporal_end}" ]]; then
+    args+=(--cmr-temporal-end "${cmr_temporal_end}")
+fi
+if [[ -n "${cmr_bbox}" ]]; then
+    args+=(--cmr-bbox "${cmr_bbox}")
+fi
+if [[ -n "${cmr_granule_ids}" ]]; then
+    args+=(--cmr-granule-ids "${cmr_granule_ids}")
+fi
+if [[ "${cmr_prefer_https}" == "true" ]]; then
+    args+=(--cmr-prefer-https)
+else
+    args+=(--no-cmr-prefer-https)
+fi
+if [[ -n "${earthdata_token_secret_name}" ]]; then
+    args+=(--earthdata-token-secret-name "${earthdata_token_secret_name}")
 fi
 
 pipeline_script="${root_dir}/src/pipeline_cog.py"

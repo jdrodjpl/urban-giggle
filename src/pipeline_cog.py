@@ -12,13 +12,12 @@ import asyncio
 import logging
 import os
 import sys
-from typing import List, Optional
-
 import backoff
 from maap.dps.dps_job import DPSJob
 
 from catalog_orchestration import catalog_products
-from common_utils import AWSUtils, ConfigUtils, LoggingUtils, MaapUtils
+from common_utils import ConfigUtils, LoggingUtils, MaapUtils
+from input_sources import InputRef, ensure_edl_login, make_source
 
 logging.basicConfig(
     level=logging.INFO,
@@ -46,38 +45,12 @@ async def wait_for_completion(job: DPSJob) -> DPSJob:
     return job
 
 
-def list_s3_tiffs(s3_prefix: str, role_arn: Optional[str],
-                  filter_pattern: Optional[str], limit: Optional[int]) -> List[str]:
-    """Enumerate TIFFs under an S3 prefix, optionally filtered."""
-    bucket, prefix = AWSUtils.parse_s3_path(s3_prefix.rstrip('/'))
-    s3 = AWSUtils.get_s3_client(role_arn=role_arn, bucket_name=bucket)
-    paginator = s3.get_paginator('list_objects_v2')
-
-    urls = []
-    for page in paginator.paginate(Bucket=bucket, Prefix=prefix):
-        for obj in page.get('Contents', []):
-            key = obj['Key']
-            if not key.lower().endswith(('.tif', '.tiff')):
-                continue
-            if filter_pattern:
-                from fnmatch import fnmatch
-                if not fnmatch(os.path.basename(key), filter_pattern):
-                    continue
-            urls.append(f"s3://{bucket}/{key}")
-
-    urls.sort()
-    if limit:
-        urls = urls[:limit]
-    logger.info(f"Discovered {len(urls)} TIFF input(s) under {s3_prefix}")
-    return urls
-
-
-async def submit_cog_job(args: argparse.Namespace, maap, input_s3_url: str) -> DPSJob:
-    """Submit a single ingest_cog DPS job for one TIFF."""
-    base = os.path.splitext(os.path.basename(input_s3_url))[0]
+async def submit_cog_job(args: argparse.Namespace, maap, input_ref: InputRef) -> DPSJob:
+    """Submit a single ingest_cog DPS job for one input."""
+    base = os.path.splitext(input_ref.name)[0]
     identifier_suffix = base[-10:] if len(base) >= 10 else base
 
-    msg = f"Submitting COG conversion job for {input_s3_url}"
+    msg = f"Submitting COG conversion job for {input_ref.url}"
     logger.info(msg)
     LoggingUtils.cmss_logger(msg, args.cmss_logger_host)
 
@@ -86,7 +59,6 @@ async def submit_cog_job(args: argparse.Namespace, maap, input_s3_url: str) -> D
         "algo_id": ALGO_ID,
         "version": ALGO_VERSION,
         "queue": args.job_queue,
-        "input_s3": input_s3_url,
         "collection_id": args.collection_id,
         "s3_bucket": args.s3_bucket,
         "s3_prefix": args.s3_prefix,
@@ -98,6 +70,15 @@ async def submit_cog_job(args: argparse.Namespace, maap, input_s3_url: str) -> D
         "overview_resampling": args.overview_resampling,
         "overwrite": "true" if args.overwrite else "false",
     }
+    if input_ref.auth_kind == "s3":
+        job_params["input_s3"] = input_ref.url
+    elif input_ref.auth_kind == "https_edl":
+        job_params["input_https"] = input_ref.url
+        if args.earthdata_token_secret_name:
+            job_params["earthdata_token_secret_name"] = args.earthdata_token_secret_name
+    else:
+        raise RuntimeError(f"Unknown auth_kind {input_ref.auth_kind!r} for {input_ref.url}")
+
     logger.debug(f"COG job parameters: {job_params}")
     job = maap.submitJob(**job_params)
 
@@ -124,24 +105,28 @@ async def main() -> None:
         maap = MaapUtils.get_maap_instance(maap_host)
 
         if input_type == "s3_tiff":
-            inputs = [args.input_s3]
-        elif input_type == "s3_prefix":
-            inputs = list_s3_tiffs(
-                args.input_s3_prefix, args.role_arn,
-                args.filter_pattern, args.limit,
-            )
-            if not inputs:
-                raise RuntimeError(f"No TIFFs found under {args.input_s3_prefix}")
+            input_refs = [InputRef(url=args.input_s3,
+                                   name=os.path.basename(args.input_s3),
+                                   auth_kind="s3")]
+        elif input_type in ("s3_prefix", "cmr"):
+            # CMR queries need an EDL session up front; S3 listing doesn't.
+            if input_type == "cmr":
+                ensure_edl_login(args.earthdata_token_secret_name, maap_instance=maap)
+            source = make_source(args)
+            logger.info(f"Resolving inputs from {source.description}")
+            input_refs = source.list_inputs()
+            if not input_refs:
+                raise RuntimeError(f"No TIFFs found via {source.description}")
         else:
             raise ValueError(
                 "local_tiff input is only supported when running ingest_cog.py "
                 "directly, not the orchestrator"
             )
 
-        logger.info(f"Submitting {len(inputs)} COG job(s) to queue {args.job_queue}")
+        logger.info(f"Submitting {len(input_refs)} COG job(s) to queue {args.job_queue}")
 
         cog_jobs = await asyncio.gather(*[
-            submit_cog_job(args, maap, url) for url in inputs
+            submit_cog_job(args, maap, ref) for ref in input_refs
         ])
 
         catalog_products(args, maap, cog_jobs, primary_asset_keys=("asset",))

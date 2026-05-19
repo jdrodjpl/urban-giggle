@@ -19,3 +19,4 @@ dependencies:
   - pip
   - pip:
     - maap-py
+    - earthaccess

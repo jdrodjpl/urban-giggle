@@ -16,6 +16,8 @@ if [[ ! -f "_job.json" ]]; then
 fi
 
 input_s3=$(jq -r '.params.input_s3 // empty' _job.json)
+input_https=$(jq -r '.params.input_https // empty' _job.json)
+earthdata_token_secret_name=$(jq -r '.params.earthdata_token_secret_name // empty' _job.json)
 collection_id=$(jq -r '.params.collection_id // empty' _job.json)
 s3_bucket=$(jq -r '.params.s3_bucket // empty' _job.json)
 s3_prefix=$(jq -r '.params.s3_prefix // ""' _job.json)
@@ -29,13 +31,14 @@ overwrite=$(jq -r '.params.overwrite // "false"' _job.json)
 
 # Fallback: input file staged via MAAP file parameter into ./input/
 input_tiff=""
-if [[ -z "${input_s3}" ]] && [ -d "input" ] && [ "$(ls -A input 2>/dev/null)" ]; then
+if [[ -z "${input_s3}" && -z "${input_https}" ]] && [ -d "input" ] && [ "$(ls -A input 2>/dev/null)" ]; then
     input_tiff=$(ls input/* | head -n 1)
     echo "Using staged input file: ${input_tiff}"
 fi
 
 echo "=== Parsed parameters ==="
 echo "input_s3:      ${input_s3}"
+echo "input_https:   ${input_https}"
 echo "input_tiff:    ${input_tiff}"
 echo "collection_id: ${collection_id}"
 echo "s3_bucket:     ${s3_bucket}"
@@ -48,10 +51,15 @@ echo "========================="
 args=()
 if [[ -n "${input_s3}" ]]; then
     args+=(--input-s3 "${input_s3}")
+elif [[ -n "${input_https}" ]]; then
+    args+=(--input-https "${input_https}")
+    if [[ -n "${earthdata_token_secret_name}" ]]; then
+        args+=(--earthdata-token-secret-name "${earthdata_token_secret_name}")
+    fi
 elif [[ -n "${input_tiff}" ]]; then
     args+=(--input-tiff "${input_tiff}")
 else
-    echo "ERROR: no input provided (input_s3 or staged input/ file)"
+    echo "ERROR: no input provided (input_s3, input_https, or staged input/ file)"
     exit 1
 fi
 

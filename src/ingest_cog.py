@@ -158,21 +158,54 @@ def convert_to_cog_lowmem(
 
 
 def stage_input(input_s3: Optional[str], input_tiff: Optional[str],
-                work_dir: Path, role_arn: Optional[str]) -> Path:
-    """Either download an S3 input or use a local TIFF."""
+                input_https: Optional[str], work_dir: Path,
+                role_arn: Optional[str],
+                earthdata_token_secret_name: Optional[str] = None) -> Path:
+    """Resolve a single TIFF input from S3, an HTTPS+EDL URL, or a local path."""
     if input_tiff:
         local = Path(input_tiff)
         if not local.exists():
             raise FileNotFoundError(f"Local input not found: {input_tiff}")
         return local
 
-    if not input_s3:
-        raise ValueError("Either --input-s3 or --input-tiff is required")
+    if input_s3:
+        bucket, key = AWSUtils.parse_s3_path(input_s3)
+        local_path = work_dir / Path(key).name
+        s3_client = AWSUtils.get_s3_client(role_arn=role_arn, bucket_name=bucket)
+        AWSUtils.download_s3_file(bucket, key, str(local_path), s3_client=s3_client)
+        return local_path
 
-    bucket, key = AWSUtils.parse_s3_path(input_s3)
-    local_path = work_dir / Path(key).name
-    s3_client = AWSUtils.get_s3_client(role_arn=role_arn, bucket_name=bucket)
-    AWSUtils.download_s3_file(bucket, key, str(local_path), s3_client=s3_client)
+    if input_https:
+        return _download_https_edl(input_https, work_dir, earthdata_token_secret_name)
+
+    raise ValueError("One of --input-s3, --input-https, or --input-tiff is required")
+
+
+def _download_https_edl(url: str, work_dir: Path,
+                        earthdata_token_secret_name: Optional[str]) -> Path:
+    """Stream an Earthdata-protected HTTPS URL to local disk using an EDL
+    session. Auth comes from a MAAP secret resolved at runtime."""
+    from input_sources import ensure_edl_login
+    import earthaccess
+
+    if not earthdata_token_secret_name:
+        raise ValueError(
+            "HTTPS+EDL input requires --earthdata-token-secret-name "
+            "to resolve the EDL bearer token."
+        )
+    ensure_edl_login(earthdata_token_secret_name)
+    auth = earthaccess.login(strategy="environment")
+    session = auth.get_session()
+
+    name = os.path.basename(url.split("?", 1)[0])
+    local_path = work_dir / name
+    logger.info(f"Downloading {url} → {local_path}")
+    with session.get(url, stream=True, allow_redirects=True) as resp:
+        resp.raise_for_status()
+        with open(local_path, "wb") as fh:
+            for chunk in resp.iter_content(chunk_size=8 * 1024 * 1024):
+                if chunk:
+                    fh.write(chunk)
     return local_path
 
 
@@ -262,7 +295,14 @@ def main() -> int:
     )
     src = parser.add_mutually_exclusive_group(required=True)
     src.add_argument("--input-s3", help="S3 URL of the input TIFF")
+    src.add_argument("--input-https",
+                     help="HTTPS URL of the input TIFF (Earthdata-protected; "
+                          "requires --earthdata-token-secret-name)")
     src.add_argument("--input-tiff", help="Local TIFF file path")
+    parser.add_argument("--earthdata-token-secret-name", default=None,
+                        help="MAAP secret name holding the EDL bearer token "
+                             "(or username\\npassword). Only required for "
+                             "--input-https.")
 
     parser.add_argument("--collection-id", required=True)
     parser.add_argument("--s3-bucket", required=True, help="Output bucket for the COG")
@@ -291,7 +331,11 @@ def main() -> int:
     stac_dir.mkdir(parents=True, exist_ok=True)
 
     try:
-        input_path = stage_input(args.input_s3, args.input_tiff, work_dir, args.role_arn)
+        input_path = stage_input(
+            args.input_s3, args.input_tiff, args.input_https,
+            work_dir, args.role_arn,
+            earthdata_token_secret_name=args.earthdata_token_secret_name,
+        )
         cog_path = cog_dir / f"{input_path.stem}_COG.tif"
 
         ok, msg = convert_to_cog_lowmem(

@@ -261,13 +261,38 @@ class ConfigUtils:
             description="Frozon ISS COG pipeline — converts TIFF inputs to Cloud Optimized GeoTIFFs."
         )
 
-        input_group = parser.add_mutually_exclusive_group(required=True)
+        input_group = parser.add_mutually_exclusive_group(required=False)
         input_group.add_argument("--input-s3",
                                  help="S3 URL of a single TIFF input")
         input_group.add_argument("--input-s3-prefix",
                                  help="S3 prefix containing TIFF inputs (each gets its own DPS job)")
         input_group.add_argument("--input-tiff",
                                  help="Local TIFF file path (used in localized/test mode)")
+
+        parser.add_argument("--input-source-type", default="s3",
+                            choices=["s3", "cmr"],
+                            help="How to resolve inputs: 's3' lists --input-s3-prefix; "
+                                 "'cmr' searches NASA CMR via --cmr-* args.")
+        parser.add_argument("--cmr-short-name", default=None,
+                            help="CMR collection short_name (required when --input-source-type=cmr)")
+        parser.add_argument("--cmr-version", default=None,
+                            help="CMR collection version. Optional.")
+        parser.add_argument("--cmr-temporal-start", default=None,
+                            help="ISO date or datetime, inclusive lower bound (UTC).")
+        parser.add_argument("--cmr-temporal-end", default=None,
+                            help="ISO date or datetime, inclusive upper bound (UTC).")
+        parser.add_argument("--cmr-bbox", default=None,
+                            help="Bounding box as 'west,south,east,north' (degrees).")
+        parser.add_argument("--cmr-granule-ids", default=None,
+                            help="Comma-separated list of specific granule UR identifiers, "
+                                 "overrides temporal/bbox.")
+        parser.add_argument("--cmr-prefer-https",
+                            action=argparse.BooleanOptionalAction, default=True,
+                            help="When True, request HTTPS granule URLs (require EDL token); "
+                                 "when False, prefer in-region s3:// links. Default: HTTPS.")
+        parser.add_argument("--earthdata-token-secret-name", default=None,
+                            help="MAAP secret name holding an EDL bearer token (or "
+                                 "username\\npassword). Required when fetching HTTPS+EDL granules.")
 
         parser.add_argument("--collection-id", required=True,
                             help="STAC collection ID for the products")
@@ -399,6 +424,8 @@ class ConfigUtils:
 
     @staticmethod
     def detect_input_type(args: argparse.Namespace) -> str:
+        if (getattr(args, 'input_source_type', None) or '').lower() == 'cmr':
+            return "cmr"
         if getattr(args, 'input_s3', None):
             return "s3_tiff"
         if getattr(args, 'input_s3_prefix', None):
