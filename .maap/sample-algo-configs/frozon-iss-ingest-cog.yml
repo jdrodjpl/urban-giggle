@@ -52,6 +52,6 @@ inputs:
     description: Overwrite existing COG output in S3
     name: overwrite
     required: false
-queue: maap-dps-czdt-worker-8gb
+queue: maap-dps-worker-8gb
 repository_url: https://github.com/jdrodjpl/urban-giggle.git
 run_command: urban-giggle/.maap/ingest-cog/run-ingest-cog.sh

@@ -52,6 +52,6 @@ inputs:
     description: When new inputs extend beyond the existing Zarr's grid, dump existing slices and rebuild on the union grid (true/false). False makes out-of-bounds inputs a fatal error.
     name: allow_bounds_expansion
     required: false
-queue: maap-dps-czdt-worker-16gb
+queue: maap-dps-worker-16gb
 repository_url: https://github.com/jdrodjpl/urban-giggle.git
 run_command: urban-giggle/.maap/ingest-zarr/run-ingest-zarr.sh

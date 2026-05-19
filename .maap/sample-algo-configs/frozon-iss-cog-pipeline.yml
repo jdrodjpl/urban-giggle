@@ -96,6 +96,6 @@ inputs:
     description: Local working directory for the orchestrator
     name: local_download_path
     required: false
-queue: maap-dps-czdt-worker-8gb
+queue: maap-dps-worker-8gb
 repository_url: https://github.com/jdrodjpl/urban-giggle.git
 run_command: urban-giggle/.maap/cog-pipeline/run-cog-pipeline.sh

@@ -80,6 +80,6 @@ inputs:
     description: Optional MAAP secret name for the post-STAC webhook bearer token.
     name: post_stac_webhook_token_secret_name
     required: false
-queue: maap-dps-czdt-worker-8gb
+queue: maap-dps-worker-8gb
 repository_url: https://github.com/jdrodjpl/urban-giggle.git
 run_command: urban-giggle/.maap/zarr-pipeline/run-zarr-pipeline.sh
