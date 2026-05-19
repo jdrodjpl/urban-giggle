@@ -1,0 +1,19 @@
+name: ingest
+channels:
+  - conda-forge
+dependencies:
+  - python>=3.11
+  - gdal
+  - rasterio
+  - rioxarray
+  - xarray
+  - numpy
+  - pystac
+  - rio-stac
+  - fsspec
+  - boto3
+  - backoff
+  - jq
+  - pip
+  - pip:
+    - maap-py

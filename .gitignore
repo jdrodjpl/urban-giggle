@@ -1,0 +1,12 @@
+
+.idea/
+.claude/*
+.devcontainer/
+.vscode/
+.DS_Store
+src/__pycache__/
+output/
+test/test-files/output
+*.tif
+*.tiff
+!test/test-files/**/*.tif

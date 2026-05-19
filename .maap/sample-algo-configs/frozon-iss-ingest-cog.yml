@@ -1,0 +1,57 @@
+algorithm_description: Frozon ISS COG Ingest Worker — converts a single TIFF input to a Cloud Optimized GeoTIFF and uploads it to S3 with a STAC catalog.
+algorithm_name: frozon-iss-ingest-cog
+algorithm_version: ingest-cog-v0.0.1
+build_command: urban-giggle/.maap/ingest-cog/build.sh
+disk_space: 50GB
+docker_container_url: mas.maap-project.org/root/maap-workspaces/custom_images/maap_base:v4.2.0
+inputs:
+  config: []
+  file: []
+  positional:
+  - default: none
+    description: S3 URL of the input TIFF file
+    name: input_s3
+    required: false
+  - default: none
+    description: STAC collection ID
+    name: collection_id
+    required: true
+  - default: none
+    description: Target S3 bucket for the COG output
+    name: s3_bucket
+    required: true
+  - default: ""
+    description: Optional S3 prefix within the output bucket
+    name: s3_prefix
+    required: false
+  - default: none
+    description: AWS IAM Role ARN to assume for S3 read/write
+    name: role_arn
+    required: true
+  - default: DEFLATE
+    description: COG compression method (DEFLATE, LZW, JPEG, WEBP, NONE)
+    name: compress
+    required: false
+  - default: "512"
+    description: COG tile block size (256, 512, 1024)
+    name: blocksize
+    required: false
+  - default: "512"
+    description: GDAL_CACHEMAX in MB for the conversion subprocess
+    name: max_memory
+    required: false
+  - default: nearest
+    description: Resampling method for base data (nearest, bilinear, cubic, average)
+    name: resampling
+    required: false
+  - default: average
+    description: Resampling method for overviews (nearest, average, cubic, mode)
+    name: overview_resampling
+    required: false
+  - default: "false"
+    description: Overwrite existing COG output in S3
+    name: overwrite
+    required: false
+queue: maap-dps-czdt-worker-8gb
+repository_url: https://github.com/jdrodjpl/urban-giggle.git
+run_command: urban-giggle/.maap/ingest-cog/run-ingest-cog.sh

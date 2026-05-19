@@ -1,0 +1,57 @@
+algorithm_description: Frozon ISS Zarr Ingest Worker — builds or upserts a sparse Zarr time series in S3 from a batch of TIFF inputs.
+algorithm_name: frozon-iss-ingest-zarr
+algorithm_version: ingest-zarr-v0.0.1
+build_command: urban-giggle/.maap/ingest-zarr/build.sh
+disk_space: 200GB
+docker_container_url: mas.maap-project.org/root/maap-workspaces/custom_images/maap_base:v4.2.0
+inputs:
+  config: []
+  file: []
+  positional:
+  - default: none
+    description: S3 prefix containing TIFF inputs to merge into the Zarr
+    name: input_s3_prefix
+    required: true
+  - default: none
+    description: STAC collection ID; also names the output Zarr (<collection-id>.zarr)
+    name: collection_id
+    required: true
+  - default: none
+    description: Target S3 bucket for the Zarr output
+    name: s3_bucket
+    required: true
+  - default: ""
+    description: Optional S3 prefix within the output bucket
+    name: s3_prefix
+    required: false
+  - default: none
+    description: AWS IAM Role ARN to assume for S3 read/write
+    name: role_arn
+    required: true
+  - default: none
+    description: Regex with named group 'start_date' (or first capture) to extract datetime from TIFF filenames
+    name: time_regex
+    required: false
+  - default: "1024"
+    description: Zarr spatial chunk size
+    name: chunk_size
+    required: false
+  - default: none
+    description: Glob filter for input filenames (e.g. "*ssha*.tif")
+    name: filter
+    required: false
+  - default: none
+    description: Glob exclude for input filenames
+    name: exclude
+    required: false
+  - default: none
+    description: Maximum number of new TIFFs to process (testing)
+    name: limit
+    required: false
+  - default: "true"
+    description: When new inputs extend beyond the existing Zarr's grid, dump existing slices and rebuild on the union grid (true/false). False makes out-of-bounds inputs a fatal error.
+    name: allow_bounds_expansion
+    required: false
+queue: maap-dps-czdt-worker-16gb
+repository_url: https://github.com/jdrodjpl/urban-giggle.git
+run_command: urban-giggle/.maap/ingest-zarr/run-ingest-zarr.sh

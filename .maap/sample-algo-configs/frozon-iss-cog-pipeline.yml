@@ -1,0 +1,101 @@
+algorithm_description: Frozon ISS COG Pipeline — orchestrates per-TIFF COG ingest jobs and STAC cataloging.
+algorithm_name: frozon-iss-cog-pipeline
+algorithm_version: cog-pipeline-v0.0.1
+build_command: urban-giggle/.maap/cog-pipeline/build.sh
+disk_space: 20GB
+docker_container_url: mas.maap-project.org/root/maap-workspaces/custom_images/maap_base:v4.2.0
+inputs:
+  config: []
+  file: []
+  positional:
+  - default: none
+    description: S3 URL of a single TIFF input (mutually exclusive with input_s3_prefix)
+    name: input_s3
+    required: false
+  - default: none
+    description: S3 prefix containing TIFF inputs (each gets its own DPS job)
+    name: input_s3_prefix
+    required: false
+  - default: none
+    description: STAC collection ID for the products
+    name: collection_id
+    required: true
+  - default: none
+    description: Target S3 bucket for COG outputs
+    name: s3_bucket
+    required: true
+  - default: ""
+    description: Optional S3 prefix within the output bucket
+    name: s3_prefix
+    required: false
+  - default: none
+    description: AWS IAM Role ARN to assume for S3 read/write
+    name: role_arn
+    required: true
+  - default: none
+    description: Host for logging pipeline messages
+    name: cmss_logger_host
+    required: false
+  - default: none
+    description: Host for cataloging STAC items
+    name: mmgis_host
+    required: false
+  - default: none
+    description: MAAP secret name for MMGIS host token
+    name: titiler_token_secret_name
+    required: false
+  - default: api.maap-project.org
+    description: MAAP API host
+    name: maap_host
+    required: false
+  - default: DEFLATE
+    description: COG compression method (DEFLATE, LZW, JPEG, WEBP, NONE)
+    name: compress
+    required: false
+  - default: "512"
+    description: COG tile block size (256, 512, 1024)
+    name: blocksize
+    required: false
+  - default: "512"
+    description: GDAL_CACHEMAX in MB for the worker subprocess
+    name: max_memory
+    required: false
+  - default: nearest
+    description: Resampling method for base data
+    name: resampling
+    required: false
+  - default: average
+    description: Resampling method for overviews
+    name: overview_resampling
+    required: false
+  - default: "false"
+    description: Overwrite existing COG outputs in S3
+    name: overwrite
+    required: false
+  - default: "true"
+    description: Upsert items into existing STAC collections (true/false). Defaults true so reruns merge into the existing catalog.
+    name: upsert
+    required: false
+  - default: none
+    description: Optional webhook URL POSTed after each STAC item upsert. Receiver is expected to fetch the COG from S3.
+    name: post_stac_webhook_url
+    required: false
+  - default: none
+    description: Optional MAAP secret name holding a bearer token for the post-STAC webhook.
+    name: post_stac_webhook_token_secret_name
+    required: false
+  - default: none
+    description: Glob filter pattern for input_s3_prefix discovery (e.g. "*ssha*.tif")
+    name: filter
+    required: false
+  - default: none
+    description: Maximum number of TIFF files to process (testing)
+    name: limit
+    required: false
+  - default: output
+    description: Local working directory for the orchestrator
+    name: local_download_path
+    required: false
+queue: maap-dps-czdt-worker-8gb
+repository_url: https://github.com/jdrodjpl/urban-giggle.git
+run_command: urban-giggle/.maap/cog-pipeline/run-cog-pipeline.sh
