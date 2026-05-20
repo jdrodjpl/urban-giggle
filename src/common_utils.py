@@ -119,7 +119,7 @@ class MaapUtils:
 
     @staticmethod
     @backoff.on_exception(backoff.expo, RuntimeError, max_value=64, max_time=172800)
-    def get_maap_instance(maap_host_url: str) -> MAAP:
+    def get_maap_instance(maap_host_url: str = "api.maap-project.org") -> MAAP:
         try:
             logging.info(f"Initializing MAAP client for host: {maap_host_url}")
             client = MAAP(maap_host=maap_host_url)

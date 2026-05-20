@@ -31,7 +31,7 @@ overwrite=$(jq -r '.params.overwrite // "false"' _job.json)
 
 # MAAP fills unset positional inputs with the YAML default "none";
 # normalize so the Python entry point doesn't see --flag none.
-for var in input_s3 input_https earthdata_token_secret_name; do
+for var in input_s3 input_https earthdata_token_secret_name role_arn s3_prefix; do
     if [[ "${!var}" == "none" ]]; then
         eval "${var}=\"\""
     fi
