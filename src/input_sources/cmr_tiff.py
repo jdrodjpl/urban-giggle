@@ -166,7 +166,7 @@ def login_from_maap_secret(secret_name: str, maap_instance=None) -> None:
     from common_utils import MaapUtils
 
     maap = maap_instance or MaapUtils.get_maap_instance()
-    secret = maap.secrets.get(secret_name)  # type: ignore[attr-defined]
+    secret = maap.secrets.get_secret(secret_name)
     body = secret if isinstance(secret, str) else secret.get("value", "")
 
     if body.startswith("token=") or len(body.strip().splitlines()) == 1 and "=" not in body:
