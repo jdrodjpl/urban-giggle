@@ -300,8 +300,9 @@ class ConfigUtils:
                             help="Target S3 bucket for COG outputs")
         parser.add_argument("--s3-prefix", default="",
                             help="Optional S3 prefix within the output bucket")
-        parser.add_argument("--role-arn", required=True,
-                            help="AWS IAM Role ARN to assume for S3 read/write")
+        parser.add_argument("--role-arn",
+                            help="AWS IAM Role ARN to assume for S3 read/write. "
+                                 "Omit to use the worker's default credential chain.")
         parser.add_argument("--cmss-logger-host",
                             help="Host for logging pipeline messages")
         parser.add_argument("--mmgis-host",
