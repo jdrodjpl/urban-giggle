@@ -29,6 +29,14 @@ resampling=$(jq -r '.params.resampling // "nearest"' _job.json)
 overview_resampling=$(jq -r '.params.overview_resampling // "average"' _job.json)
 overwrite=$(jq -r '.params.overwrite // "false"' _job.json)
 
+# MAAP fills unset positional inputs with the YAML default "none";
+# normalize so the Python entry point doesn't see --flag none.
+for var in input_s3 input_https earthdata_token_secret_name; do
+    if [[ "${!var}" == "none" ]]; then
+        eval "${var}=\"\""
+    fi
+done
+
 # Fallback: input file staged via MAAP file parameter into ./input/
 input_tiff=""
 if [[ -z "${input_s3}" && -z "${input_https}" ]] && [ -d "input" ] && [ "$(ls -A input 2>/dev/null)" ]; then

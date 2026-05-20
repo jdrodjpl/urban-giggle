@@ -34,6 +34,14 @@ upsert=$(jq -r '.params.upsert // "true"' _job.json)
 post_stac_webhook_url=$(jq -r '.params.post_stac_webhook_url // empty' _job.json)
 post_stac_webhook_token_secret_name=$(jq -r '.params.post_stac_webhook_token_secret_name // empty' _job.json)
 
+for var in input_s3_prefix cmss_logger_host mmgis_host titiler_token_secret_name \
+           time_regex filter_pattern exclude_pattern limit \
+           post_stac_webhook_url post_stac_webhook_token_secret_name; do
+    if [[ "${!var}" == "none" ]]; then
+        eval "${var}=\"\""
+    fi
+done
+
 default_queue=$(jq -r '.job_info.job_queue // empty' _job.json)
 job_queue=$(jq -r '.params.job_queue // empty' _job.json)
 if [[ -z "${job_queue}" ]]; then

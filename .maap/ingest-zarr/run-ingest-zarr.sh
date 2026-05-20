@@ -28,6 +28,12 @@ exclude_pattern=$(jq -r '.params.exclude // empty' _job.json)
 limit=$(jq -r '.params.limit // empty' _job.json)
 allow_bounds_expansion=$(jq -r '.params.allow_bounds_expansion // "true"' _job.json)
 
+for var in input_s3_prefix time_regex filter_pattern exclude_pattern limit; do
+    if [[ "${!var}" == "none" ]]; then
+        eval "${var}=\"\""
+    fi
+done
+
 echo "=== Parsed parameters ==="
 echo "input_s3_prefix:          ${input_s3_prefix}"
 echo "collection_id:            ${collection_id}"

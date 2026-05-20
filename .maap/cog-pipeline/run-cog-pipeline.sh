@@ -47,6 +47,19 @@ cmr_granule_ids=$(jq -r '.params.cmr_granule_ids // empty' _job.json)
 cmr_prefer_https=$(jq -r '.params.cmr_prefer_https // "true"' _job.json)
 earthdata_token_secret_name=$(jq -r '.params.earthdata_token_secret_name // empty' _job.json)
 
+# MAAP fills unset positional inputs with the YAML's `default:` literal,
+# which for optional fields is the string "none". Normalize that to empty
+# so the Python entry point doesn't see a literal --flag none.
+for var in input_s3 input_s3_prefix cmss_logger_host mmgis_host \
+           titiler_token_secret_name post_stac_webhook_url \
+           post_stac_webhook_token_secret_name filter_pattern limit \
+           cmr_short_name cmr_version cmr_temporal_start cmr_temporal_end \
+           cmr_bbox cmr_granule_ids earthdata_token_secret_name; do
+    if [[ "${!var}" == "none" ]]; then
+        eval "${var}=\"\""
+    fi
+done
+
 default_queue=$(jq -r '.job_info.job_queue // empty' _job.json)
 job_queue=$(jq -r '.params.job_queue // empty' _job.json)
 if [[ -z "${job_queue}" ]]; then
