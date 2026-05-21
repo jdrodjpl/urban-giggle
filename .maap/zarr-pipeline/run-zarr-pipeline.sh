@@ -33,11 +33,25 @@ allow_bounds_expansion=$(jq -r '.params.allow_bounds_expansion // "true"' _job.j
 upsert=$(jq -r '.params.upsert // "true"' _job.json)
 post_stac_webhook_url=$(jq -r '.params.post_stac_webhook_url // empty' _job.json)
 post_stac_webhook_token_secret_name=$(jq -r '.params.post_stac_webhook_token_secret_name // empty' _job.json)
+input_source_type=$(jq -r '.params.input_source_type // "s3"' _job.json)
+cmr_short_name=$(jq -r '.params.cmr_short_name // empty' _job.json)
+cmr_version=$(jq -r '.params.cmr_version // empty' _job.json)
+cmr_temporal_start=$(jq -r '.params.cmr_temporal_start // empty' _job.json)
+cmr_temporal_end=$(jq -r '.params.cmr_temporal_end // empty' _job.json)
+cmr_bbox=$(jq -r '.params.cmr_bbox // empty' _job.json)
+cmr_granule_ids=$(jq -r '.params.cmr_granule_ids // empty' _job.json)
+cmr_prefer_https=$(jq -r '.params.cmr_prefer_https // "true"' _job.json)
+earthdata_token_secret_name=$(jq -r '.params.earthdata_token_secret_name // empty' _job.json)
+retain_days=$(jq -r '.params.retain_days // "0"' _job.json)
 
-for var in input_s3_prefix cmss_logger_host mmgis_host titiler_token_secret_name \
-           time_regex filter_pattern exclude_pattern limit \
-           post_stac_webhook_url post_stac_webhook_token_secret_name; do
-    if [[ "${!var}" == "none" ]]; then
+for var in input_s3_prefix role_arn cmss_logger_host mmgis_host \
+           titiler_token_secret_name time_regex filter_pattern \
+           exclude_pattern limit post_stac_webhook_url \
+           post_stac_webhook_token_secret_name \
+           cmr_short_name cmr_version cmr_temporal_start cmr_temporal_end \
+           cmr_bbox cmr_granule_ids earthdata_token_secret_name; do
+    val_lc=$(echo "${!var}" | tr '[:upper:]' '[:lower:]')
+    if [[ "${val_lc}" == "none" || "${val_lc}" == "null" ]]; then
         eval "${var}=\"\""
     fi
 done
@@ -120,6 +134,35 @@ fi
 if [[ -n "${post_stac_webhook_token_secret_name}" ]]; then
     args+=(--post-stac-webhook-token-secret-name "${post_stac_webhook_token_secret_name}")
 fi
+
+args+=(--input-source-type "${input_source_type}")
+if [[ -n "${cmr_short_name}" ]]; then
+    args+=(--cmr-short-name "${cmr_short_name}")
+fi
+if [[ -n "${cmr_version}" ]]; then
+    args+=(--cmr-version "${cmr_version}")
+fi
+if [[ -n "${cmr_temporal_start}" ]]; then
+    args+=(--cmr-temporal-start "${cmr_temporal_start}")
+fi
+if [[ -n "${cmr_temporal_end}" ]]; then
+    args+=(--cmr-temporal-end "${cmr_temporal_end}")
+fi
+if [[ -n "${cmr_bbox}" ]]; then
+    args+=(--cmr-bbox "${cmr_bbox}")
+fi
+if [[ -n "${cmr_granule_ids}" ]]; then
+    args+=(--cmr-granule-ids "${cmr_granule_ids}")
+fi
+if [[ "${cmr_prefer_https}" == "true" ]]; then
+    args+=(--cmr-prefer-https)
+else
+    args+=(--no-cmr-prefer-https)
+fi
+if [[ -n "${earthdata_token_secret_name}" ]]; then
+    args+=(--earthdata-token-secret-name "${earthdata_token_secret_name}")
+fi
+args+=(--retain-days "${retain_days}")
 
 pipeline_script="${root_dir}/src/pipeline_zarr.py"
 echo "Executing: python ${pipeline_script} ${args[@]}"

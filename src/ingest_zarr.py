@@ -23,10 +23,12 @@ item via the orchestrator's upsert step.
 
 import argparse
 import gc
+import json
 import logging
 import os
+import shutil
 import sys
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from fnmatch import fnmatch
 from pathlib import Path
 from typing import List, Optional, Tuple
@@ -84,6 +86,69 @@ def stage_inputs_from_s3(s3_prefix: str, local_dir: Path,
 
     logger.info(f"Staged {len(local_paths)} TIFF(s) from {s3_prefix}")
     return local_paths
+
+
+def stage_inputs_from_https(urls: List[str], local_dir: Path,
+                             earthdata_token_secret_name: Optional[str]) -> List[Path]:
+    """Download a list of Earthdata-protected HTTPS URLs to `local_dir`.
+    Uses the shared CMR/EDL helper. Returns local Path objects in input order."""
+    from input_sources.cmr_tiff import download_https_edl
+
+    local_dir.mkdir(parents=True, exist_ok=True)
+    paths: List[Path] = []
+    for url in urls:
+        local_path = download_https_edl(url, local_dir, earthdata_token_secret_name)
+        paths.append(local_path)
+    logger.info(f"Staged {len(paths)} TIFF(s) from HTTPS+EDL inputs")
+    return paths
+
+
+def prune_to_window(local_zarr: Path, retain_days: int,
+                    now: Optional[datetime] = None) -> bool:
+    """Drop Zarr time slices older than (now - retain_days). Returns True
+    iff any slices were dropped. Refuses to empty the store: if every
+    slice would be removed, leaves the Zarr untouched (the caller should
+    investigate upstream)."""
+    if retain_days <= 0:
+        return False
+
+    now = now or datetime.now(timezone.utc)
+    cutoff = now - timedelta(days=retain_days)
+    cutoff_np = np.datetime64(cutoff.replace(tzinfo=None))
+
+    ds = xr.open_zarr(str(local_zarr), consolidated=False, decode_times=True)
+    times = ds.coords['time'].values
+    keep_mask = times >= cutoff_np
+    kept = int(keep_mask.sum())
+    total = len(times)
+
+    if kept == total:
+        logger.info(f"prune_to_window: all {total} slice(s) within last {retain_days} days; no-op")
+        ds.close()
+        return False
+    if kept == 0:
+        logger.warning(
+            f"prune_to_window: ALL {total} slice(s) older than {retain_days} days; "
+            "refusing to empty the Zarr (safety floor — investigate upstream)"
+        )
+        ds.close()
+        return False
+
+    pruned = ds.isel(time=np.where(keep_mask)[0])
+    ds.close()
+
+    tmp_path = local_zarr.parent / (local_zarr.name + ".pruning")
+    if tmp_path.exists():
+        shutil.rmtree(tmp_path)
+    pruned.to_zarr(str(tmp_path), mode='w', consolidated=True)
+
+    shutil.rmtree(local_zarr)
+    os.rename(str(tmp_path), str(local_zarr))
+    logger.info(
+        f"prune_to_window: dropped {total - kept} of {total} slice(s) "
+        f"(cutoff {cutoff.isoformat()})"
+    )
+    return True
 
 
 def compute_new_bounds(tiff_files: List[Path]) -> Optional[dict]:
@@ -337,7 +402,15 @@ def main() -> int:
     src = parser.add_mutually_exclusive_group(required=True)
     src.add_argument("--input-s3-prefix", help="S3 prefix containing TIFF inputs")
     src.add_argument("--input-tiff-dir", help="Local TIFF directory (test mode)")
+    src.add_argument("--input-https-urls",
+                     help="JSON list of Earthdata-protected HTTPS URLs to download.")
 
+    parser.add_argument("--earthdata-token-secret-name", default=None,
+                        help="MAAP secret name holding EDL bearer token (or "
+                             "username\\npassword). Required with --input-https-urls.")
+    parser.add_argument("--retain-days", type=int, default=0,
+                        help="If > 0, prune Zarr time slices older than "
+                             "(now - N days) after append/build. 0 disables pruning.")
     parser.add_argument("--collection-id", required=True)
     parser.add_argument("--s3-bucket", required=True)
     parser.add_argument("--s3-prefix", default="")
@@ -378,6 +451,17 @@ def main() -> int:
                 new_tiffs = [f for f in new_tiffs if not fnmatch(f.name, args.exclude_pattern)]
             if args.limit:
                 new_tiffs = new_tiffs[:args.limit]
+        elif args.input_https_urls:
+            urls = json.loads(args.input_https_urls)
+            if args.filter_pattern:
+                urls = [u for u in urls if fnmatch(os.path.basename(u.split('?',1)[0]), args.filter_pattern)]
+            if args.exclude_pattern:
+                urls = [u for u in urls if not fnmatch(os.path.basename(u.split('?',1)[0]), args.exclude_pattern)]
+            if args.limit:
+                urls = urls[:args.limit]
+            new_tiffs = stage_inputs_from_https(
+                urls, new_tiff_dir, args.earthdata_token_secret_name,
+            )
         else:
             new_tiffs = stage_inputs_from_s3(
                 args.input_s3_prefix, new_tiff_dir, args.role_arn,
@@ -391,6 +475,10 @@ def main() -> int:
             args, new_tiffs, work_dir, final_zarr, zarr_s3_url
         )
         logger.info(f"Zarr built ({mode}); time range {min_dt.isoformat()} → {max_dt.isoformat()}")
+
+        if args.retain_days > 0:
+            prune_to_window(final_zarr, args.retain_days)
+            bounds, min_dt, max_dt = read_zarr_summary(final_zarr)
 
         zarr_io.upload_zarr_store(
             final_zarr, zarr_s3_url, args.role_arn, delete_remote_first=True,

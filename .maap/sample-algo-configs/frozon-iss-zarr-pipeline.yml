@@ -8,10 +8,10 @@ inputs:
   config: []
   file: []
   positional:
-  - default: none
-    description: S3 prefix containing TIFF inputs to merge into the Zarr
+  - default: ""
+    description: S3 prefix containing TIFF inputs to merge into the Zarr (used when input_source_type=s3)
     name: input_s3_prefix
-    required: true
+    required: false
   - default: none
     description: STAC collection ID
     name: collection_id
@@ -79,6 +79,46 @@ inputs:
   - default: none
     description: Optional MAAP secret name for the post-STAC webhook bearer token.
     name: post_stac_webhook_token_secret_name
+    required: false
+  - default: s3
+    description: How to resolve inputs ('s3' uses input_s3_prefix, 'cmr' uses cmr_* params)
+    name: input_source_type
+    required: false
+  - default: ""
+    description: CMR collection short_name (required when input_source_type=cmr)
+    name: cmr_short_name
+    required: false
+  - default: ""
+    description: CMR collection version
+    name: cmr_version
+    required: false
+  - default: ""
+    description: ISO datetime lower bound for CMR temporal filter
+    name: cmr_temporal_start
+    required: false
+  - default: ""
+    description: ISO datetime upper bound for CMR temporal filter
+    name: cmr_temporal_end
+    required: false
+  - default: ""
+    description: CMR bbox 'west,south,east,north' (degrees)
+    name: cmr_bbox
+    required: false
+  - default: ""
+    description: Comma-separated CMR granule UR identifiers
+    name: cmr_granule_ids
+    required: false
+  - default: "true"
+    description: Prefer HTTPS granule URLs (requires EDL token) vs. in-region S3 links
+    name: cmr_prefer_https
+    required: false
+  - default: ""
+    description: MAAP secret name holding EDL bearer token (or username\npassword)
+    name: earthdata_token_secret_name
+    required: false
+  - default: "0"
+    description: If > 0, prune Zarr time slices older than (now - N days) after build/append
+    name: retain_days
     required: false
 queue: maap-dps-worker-8gb
 repository_url: https://github.com/jdrodjpl/urban-giggle.git

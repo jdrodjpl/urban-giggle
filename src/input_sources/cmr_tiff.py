@@ -151,6 +151,48 @@ class CMRTiffSource:
             return urls
 
 
+def download_https_edl(
+    url: str,
+    local_dir,
+    earthdata_token_secret_name: Optional[str],
+    maap_instance=None,
+):
+    """Stream an Earthdata-protected HTTPS URL to `local_dir/<basename>` using
+    an EDL session. Auth comes from a MAAP secret resolved at runtime.
+
+    Returns the local pathlib.Path. Raises if the secret_name is missing or
+    the HTTP response is non-2xx.
+
+    Safe to call repeatedly in the same process — earthaccess caches the
+    session after the first login.
+    """
+    import os as _os
+    from pathlib import Path
+    import earthaccess
+
+    if not earthdata_token_secret_name:
+        raise ValueError(
+            "HTTPS+EDL input requires an earthdata-token-secret-name to "
+            "resolve the EDL bearer token (or username\\npassword)."
+        )
+    login_from_maap_secret(earthdata_token_secret_name, maap_instance=maap_instance)
+    auth = earthaccess.login(strategy="environment")
+    session = auth.get_session()
+
+    local_dir = Path(local_dir)
+    local_dir.mkdir(parents=True, exist_ok=True)
+    name = _os.path.basename(url.split("?", 1)[0])
+    local_path = local_dir / name
+    logger.info(f"Downloading {url} → {local_path}")
+    with session.get(url, stream=True, allow_redirects=True) as resp:
+        resp.raise_for_status()
+        with open(local_path, "wb") as fh:
+            for chunk in resp.iter_content(chunk_size=8 * 1024 * 1024):
+                if chunk:
+                    fh.write(chunk)
+    return local_path
+
+
 def login_from_maap_secret(secret_name: str, maap_instance=None) -> None:
     """Resolve an EDL bearer token from a MAAP secret and log into earthaccess.
 

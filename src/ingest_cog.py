@@ -176,37 +176,10 @@ def stage_input(input_s3: Optional[str], input_tiff: Optional[str],
         return local_path
 
     if input_https:
-        return _download_https_edl(input_https, work_dir, earthdata_token_secret_name)
+        from input_sources.cmr_tiff import download_https_edl
+        return download_https_edl(input_https, work_dir, earthdata_token_secret_name)
 
     raise ValueError("One of --input-s3, --input-https, or --input-tiff is required")
-
-
-def _download_https_edl(url: str, work_dir: Path,
-                        earthdata_token_secret_name: Optional[str]) -> Path:
-    """Stream an Earthdata-protected HTTPS URL to local disk using an EDL
-    session. Auth comes from a MAAP secret resolved at runtime."""
-    from input_sources import ensure_edl_login
-    import earthaccess
-
-    if not earthdata_token_secret_name:
-        raise ValueError(
-            "HTTPS+EDL input requires --earthdata-token-secret-name "
-            "to resolve the EDL bearer token."
-        )
-    ensure_edl_login(earthdata_token_secret_name)
-    auth = earthaccess.login(strategy="environment")
-    session = auth.get_session()
-
-    name = os.path.basename(url.split("?", 1)[0])
-    local_path = work_dir / name
-    logger.info(f"Downloading {url} → {local_path}")
-    with session.get(url, stream=True, allow_redirects=True) as resp:
-        resp.raise_for_status()
-        with open(local_path, "wb") as fh:
-            for chunk in resp.iter_content(chunk_size=8 * 1024 * 1024):
-                if chunk:
-                    fh.write(chunk)
-    return local_path
 
 
 def build_stac_item(cog_local_path: Path, collection_id: str) -> pystac.Item:

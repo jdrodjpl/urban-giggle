@@ -367,11 +367,37 @@ class ConfigUtils:
                         "time series from TIFF inputs."
         )
 
-        input_group = parser.add_mutually_exclusive_group(required=True)
+        input_group = parser.add_mutually_exclusive_group(required=False)
         input_group.add_argument("--input-s3-prefix",
                                  help="S3 prefix containing TIFF inputs to merge")
         input_group.add_argument("--input-tiff-dir",
                                  help="Local directory of TIFFs (worker/test mode only)")
+        input_group.add_argument("--input-https-urls", default=None,
+                                 help="JSON list of HTTPS+EDL URLs to download "
+                                      "(populated by the orchestrator from CMR search).")
+
+        parser.add_argument("--input-source-type", default="s3",
+                            choices=["s3", "cmr"],
+                            help="How to resolve inputs: 's3' lists --input-s3-prefix; "
+                                 "'cmr' searches NASA CMR via --cmr-* args.")
+        parser.add_argument("--cmr-short-name", default=None,
+                            help="CMR collection short_name (required when --input-source-type=cmr)")
+        parser.add_argument("--cmr-version", default=None,
+                            help="CMR collection version. Optional.")
+        parser.add_argument("--cmr-temporal-start", default=None,
+                            help="ISO date or datetime, inclusive lower bound (UTC).")
+        parser.add_argument("--cmr-temporal-end", default=None,
+                            help="ISO date or datetime, inclusive upper bound (UTC).")
+        parser.add_argument("--cmr-bbox", default=None,
+                            help="Bounding box as 'west,south,east,north' (degrees).")
+        parser.add_argument("--cmr-granule-ids", default=None,
+                            help="Comma-separated CMR granule UR identifiers.")
+        parser.add_argument("--cmr-prefer-https",
+                            action=argparse.BooleanOptionalAction, default=True,
+                            help="Prefer HTTPS granule URLs (require EDL token).")
+        parser.add_argument("--earthdata-token-secret-name", default=None,
+                            help="MAAP secret name holding EDL bearer token (or "
+                                 "username\\npassword). Required for CMR/EDL.")
 
         parser.add_argument("--collection-id", required=True,
                             help="STAC collection ID; also names the output Zarr "
@@ -380,8 +406,9 @@ class ConfigUtils:
                             help="Target S3 bucket for the Zarr output")
         parser.add_argument("--s3-prefix", default="",
                             help="Optional S3 prefix within the output bucket")
-        parser.add_argument("--role-arn", required=True,
-                            help="AWS IAM Role ARN to assume for S3 read/write")
+        parser.add_argument("--role-arn",
+                            help="AWS IAM Role ARN to assume for S3 read/write. "
+                                 "Omit to use the worker's default credential chain.")
         parser.add_argument("--cmss-logger-host",
                             help="Host for logging pipeline messages")
         parser.add_argument("--mmgis-host",
@@ -421,6 +448,12 @@ class ConfigUtils:
                             help="Optional URL POSTed after STAC item upsert.")
         parser.add_argument("--post-stac-webhook-token-secret-name", default=None,
                             help="Optional MAAP secret name for the webhook bearer token.")
+
+        parser.add_argument("--retain-days", type=int, default=0,
+                            help="If > 0, prune Zarr time slices older than "
+                                 "(now - N days) after append/build. 0 disables "
+                                 "pruning. Safety: if all slices would be dropped, "
+                                 "the Zarr is left untouched.")
 
         return parser
 

@@ -52,6 +52,18 @@ inputs:
     description: When new inputs extend beyond the existing Zarr's grid, dump existing slices and rebuild on the union grid (true/false). False makes out-of-bounds inputs a fatal error.
     name: allow_bounds_expansion
     required: false
+  - default: ""
+    description: JSON list of Earthdata-protected HTTPS URLs (populated by the orchestrator from CMR search)
+    name: input_https_urls
+    required: false
+  - default: ""
+    description: MAAP secret name holding EDL bearer token (or username\npassword); required for input_https_urls
+    name: earthdata_token_secret_name
+    required: false
+  - default: "0"
+    description: If > 0, prune Zarr time slices older than (now - N days) after build/append
+    name: retain_days
+    required: false
 queue: maap-dps-worker-16gb
 repository_url: https://github.com/jdrodjpl/urban-giggle.git
 run_command: urban-giggle/.maap/ingest-zarr/run-ingest-zarr.sh
