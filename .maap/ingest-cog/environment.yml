@@ -13,10 +13,10 @@ dependencies:
   - fsspec
   - boto3
   - backoff
-  - paramiko
   - jq
   - pip
   - pip:
     - maap-py
     - earthaccess
+    - paramiko
     - scp
