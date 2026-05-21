@@ -57,8 +57,7 @@ def upload_via_scp(
         return False
 
     pkey = None
-    for key_cls in (paramiko.RSAKey, paramiko.Ed25519Key,
-                    paramiko.ECDSAKey, paramiko.DSSKey):
+    for key_cls in (paramiko.RSAKey, paramiko.Ed25519Key, paramiko.ECDSAKey):
         try:
             pkey = key_cls.from_private_key(StringIO(pem))
             logger.info(f"Loaded {key_cls.__name__} private key")
@@ -66,7 +65,7 @@ def upload_via_scp(
         except paramiko.SSHException:
             continue
     if pkey is None:
-        logger.error("Could not parse the SSH private key as RSA/Ed25519/ECDSA/DSS")
+        logger.error("Could not parse the SSH private key as RSA/Ed25519/ECDSA")
         return False
 
     ssh = paramiko.SSHClient()
