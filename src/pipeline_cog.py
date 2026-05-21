@@ -62,7 +62,6 @@ async def submit_cog_job(args: argparse.Namespace, maap, input_ref: InputRef) ->
         "collection_id": args.collection_id,
         "s3_bucket": args.s3_bucket,
         "s3_prefix": args.s3_prefix,
-        "role_arn": args.role_arn,
         "compress": args.compress,
         "blocksize": str(args.blocksize),
         "max_memory": str(args.max_memory),
@@ -70,6 +69,8 @@ async def submit_cog_job(args: argparse.Namespace, maap, input_ref: InputRef) ->
         "overview_resampling": args.overview_resampling,
         "overwrite": "true" if args.overwrite else "false",
     }
+    if args.role_arn:
+        job_params["role_arn"] = args.role_arn
     if input_ref.auth_kind == "s3":
         job_params["input_s3"] = input_ref.url
     elif input_ref.auth_kind == "https_edl":
@@ -78,6 +79,11 @@ async def submit_cog_job(args: argparse.Namespace, maap, input_ref: InputRef) ->
             job_params["earthdata_token_secret_name"] = args.earthdata_token_secret_name
     else:
         raise RuntimeError(f"Unknown auth_kind {input_ref.auth_kind!r} for {input_ref.url}")
+
+    # MAAP serializes None as the string "None" in _job.json which breaks the
+    # worker's argparse. Drop None values defensively in case anything else
+    # leaks through.
+    job_params = {k: v for k, v in job_params.items() if v is not None}
 
     logger.debug(f"COG job parameters: {job_params}")
     job = maap.submitJob(**job_params)

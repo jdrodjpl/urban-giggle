@@ -56,7 +56,8 @@ for var in input_s3 input_s3_prefix role_arn s3_prefix \
            filter_pattern limit \
            cmr_short_name cmr_version cmr_temporal_start cmr_temporal_end \
            cmr_bbox cmr_granule_ids earthdata_token_secret_name; do
-    if [[ "${!var}" == "none" ]]; then
+    val_lc=$(echo "${!var}" | tr '[:upper:]' '[:lower:]')
+    if [[ "${val_lc}" == "none" || "${val_lc}" == "null" ]]; then
         eval "${var}=\"\""
     fi
 done
