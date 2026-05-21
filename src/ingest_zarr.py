@@ -155,7 +155,7 @@ def compute_new_bounds(tiff_files: List[Path]) -> Optional[dict]:
     """Compute union bounds of new TIFFs without writing anything."""
     if not tiff_files:
         return None
-    bounds, _resolution, _crs = bzss.get_global_bounds_and_resolution(tiff_files)
+    bounds, _resolution, _crs, _nodata = bzss.get_global_bounds_and_resolution(tiff_files)
     return bounds
 
 

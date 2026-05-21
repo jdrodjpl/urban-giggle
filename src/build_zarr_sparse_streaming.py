@@ -95,16 +95,17 @@ def extract_datetime_from_filename(filename: str, time_regex: Optional[str] = No
     return None
 
 
-def get_global_bounds_and_resolution(tiff_files: List[Path]) -> Tuple[dict, float, str]:
+def get_global_bounds_and_resolution(tiff_files: List[Path]) -> Tuple[dict, float, str, Optional[float]]:
     """
     Calculate the union of all bounds from all files and detect resolution.
-    Returns: (bounds_dict, resolution, crs)
+    Returns: (bounds_dict, resolution, crs, source_nodata)
     """
     logger.info("Calculating global extent from all files...")
 
     all_bounds = []
     resolutions = []
     crs = None
+    source_nodata = None
 
     for i, f in enumerate(tiff_files):
         if i % 20 == 0:
@@ -154,7 +155,7 @@ def get_global_bounds_and_resolution(tiff_files: List[Path]) -> Tuple[dict, floa
     logger.info(f"Resolution: {resolution:.2f} units")
     logger.info(f"CRS: {crs}")
 
-    return global_bounds, resolution, str(crs) if crs else 'unknown'
+    return global_bounds, resolution, str(crs) if crs else 'unknown', source_nodata
 
 
 def build_zarr_streaming(
@@ -201,7 +202,7 @@ def build_zarr_streaming(
         logger.info(f"✓ Successfully extracted dates from all {len(tiff_files)} files")
 
         # Get global bounds and resolution from all files
-        global_bounds, resolution, crs = get_global_bounds_and_resolution(tiff_files)
+        global_bounds, resolution, crs, source_nodata = get_global_bounds_and_resolution(tiff_files)
 
         # Calculate grid dimensions based on global bounds
         grid_width = int(np.ceil(global_bounds['width'] / resolution))
