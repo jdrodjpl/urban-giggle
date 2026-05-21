@@ -71,6 +71,15 @@ async def submit_cog_job(args: argparse.Namespace, maap, input_ref: InputRef) ->
     }
     if args.role_arn:
         job_params["role_arn"] = args.role_arn
+    if args.scp_host:
+        job_params["scp_host"] = args.scp_host
+        job_params["scp_port"] = str(args.scp_port)
+        if args.scp_user:
+            job_params["scp_user"] = args.scp_user
+        if args.scp_remote_dir:
+            job_params["scp_remote_dir"] = args.scp_remote_dir
+        if args.scp_key_secret_name:
+            job_params["scp_key_secret_name"] = args.scp_key_secret_name
     if input_ref.auth_kind == "s3":
         job_params["input_s3"] = input_ref.url
     elif input_ref.auth_kind == "https_edl":

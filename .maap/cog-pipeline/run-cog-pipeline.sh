@@ -46,6 +46,11 @@ cmr_bbox=$(jq -r '.params.cmr_bbox // empty' _job.json)
 cmr_granule_ids=$(jq -r '.params.cmr_granule_ids // empty' _job.json)
 cmr_prefer_https=$(jq -r '.params.cmr_prefer_https // "true"' _job.json)
 earthdata_token_secret_name=$(jq -r '.params.earthdata_token_secret_name // empty' _job.json)
+scp_host=$(jq -r '.params.scp_host // empty' _job.json)
+scp_port=$(jq -r '.params.scp_port // "22"' _job.json)
+scp_user=$(jq -r '.params.scp_user // empty' _job.json)
+scp_remote_dir=$(jq -r '.params.scp_remote_dir // empty' _job.json)
+scp_key_secret_name=$(jq -r '.params.scp_key_secret_name // empty' _job.json)
 
 # MAAP fills unset positional inputs with the YAML's `default:` literal,
 # which for optional fields is the string "none". Normalize that to empty
@@ -55,7 +60,8 @@ for var in input_s3 input_s3_prefix role_arn s3_prefix \
            post_stac_webhook_url post_stac_webhook_token_secret_name \
            filter_pattern limit \
            cmr_short_name cmr_version cmr_temporal_start cmr_temporal_end \
-           cmr_bbox cmr_granule_ids earthdata_token_secret_name; do
+           cmr_bbox cmr_granule_ids earthdata_token_secret_name \
+           scp_host scp_user scp_remote_dir scp_key_secret_name; do
     val_lc=$(echo "${!var}" | tr '[:upper:]' '[:lower:]')
     if [[ "${val_lc}" == "none" || "${val_lc}" == "null" ]]; then
         eval "${var}=\"\""
@@ -171,6 +177,19 @@ else
 fi
 if [[ -n "${earthdata_token_secret_name}" ]]; then
     args+=(--earthdata-token-secret-name "${earthdata_token_secret_name}")
+fi
+if [[ -n "${scp_host}" ]]; then
+    args+=(--scp-host "${scp_host}")
+    args+=(--scp-port "${scp_port}")
+    if [[ -n "${scp_user}" ]]; then
+        args+=(--scp-user "${scp_user}")
+    fi
+    if [[ -n "${scp_remote_dir}" ]]; then
+        args+=(--scp-remote-dir "${scp_remote_dir}")
+    fi
+    if [[ -n "${scp_key_secret_name}" ]]; then
+        args+=(--scp-key-secret-name "${scp_key_secret_name}")
+    fi
 fi
 
 pipeline_script="${root_dir}/src/pipeline_cog.py"

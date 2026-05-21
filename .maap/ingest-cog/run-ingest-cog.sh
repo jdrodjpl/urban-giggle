@@ -28,10 +28,16 @@ max_memory=$(jq -r '.params.max_memory // "512"' _job.json)
 resampling=$(jq -r '.params.resampling // "nearest"' _job.json)
 overview_resampling=$(jq -r '.params.overview_resampling // "average"' _job.json)
 overwrite=$(jq -r '.params.overwrite // "false"' _job.json)
+scp_host=$(jq -r '.params.scp_host // empty' _job.json)
+scp_port=$(jq -r '.params.scp_port // "22"' _job.json)
+scp_user=$(jq -r '.params.scp_user // empty' _job.json)
+scp_remote_dir=$(jq -r '.params.scp_remote_dir // empty' _job.json)
+scp_key_secret_name=$(jq -r '.params.scp_key_secret_name // empty' _job.json)
 
 # MAAP fills unset positional inputs with the YAML default "none";
 # normalize so the Python entry point doesn't see --flag none.
-for var in input_s3 input_https earthdata_token_secret_name role_arn s3_prefix; do
+for var in input_s3 input_https earthdata_token_secret_name role_arn s3_prefix \
+           scp_host scp_user scp_remote_dir scp_key_secret_name; do
     val_lc=$(echo "${!var}" | tr '[:upper:]' '[:lower:]')
     if [[ "${val_lc}" == "none" || "${val_lc}" == "null" ]]; then
         eval "${var}=\"\""
@@ -94,6 +100,19 @@ args+=(--output output)
 
 if [[ "${overwrite}" == "true" ]]; then
     args+=(--overwrite)
+fi
+if [[ -n "${scp_host}" ]]; then
+    args+=(--scp-host "${scp_host}")
+    args+=(--scp-port "${scp_port}")
+    if [[ -n "${scp_user}" ]]; then
+        args+=(--scp-user "${scp_user}")
+    fi
+    if [[ -n "${scp_remote_dir}" ]]; then
+        args+=(--scp-remote-dir "${scp_remote_dir}")
+    fi
+    if [[ -n "${scp_key_secret_name}" ]]; then
+        args+=(--scp-key-secret-name "${scp_key_secret_name}")
+    fi
 fi
 
 worker_script="${root_dir}/src/ingest_cog.py"

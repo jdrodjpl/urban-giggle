@@ -132,6 +132,26 @@ inputs:
     description: MAAP secret name holding the EDL bearer token (or username\npassword)
     name: earthdata_token_secret_name
     required: false
+  - default: ""
+    description: Optional SCP delivery host (IP or DNS); enables post-S3 SCP push from each worker
+    name: scp_host
+    required: false
+  - default: "22"
+    description: SCP port
+    name: scp_port
+    required: false
+  - default: ""
+    description: SCP username
+    name: scp_user
+    required: false
+  - default: ""
+    description: SCP remote directory (COG lands as <dir>/<filename>, path flattened)
+    name: scp_remote_dir
+    required: false
+  - default: ""
+    description: MAAP secret name holding the SSH private key (PEM)
+    name: scp_key_secret_name
+    required: false
 queue: maap-dps-worker-8gb
 repository_url: https://github.com/jdrodjpl/urban-giggle.git
 run_command: urban-giggle/.maap/cog-pipeline/run-cog-pipeline.sh

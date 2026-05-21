@@ -321,6 +321,17 @@ def main() -> int:
     parser.add_argument("--output", default="output",
                         help="Local working directory for staged input/output")
 
+    parser.add_argument("--scp-host", default=None,
+                        help="Optional: SCP delivery hostname/IP. When set, "
+                             "the COG is also pushed via SCP after S3 upload.")
+    parser.add_argument("--scp-port", type=int, default=22)
+    parser.add_argument("--scp-user", default=None)
+    parser.add_argument("--scp-remote-dir", default=None,
+                        help="Remote directory; the COG is written as "
+                             "<remote-dir>/<filename> (path flattened).")
+    parser.add_argument("--scp-key-secret-name", default=None,
+                        help="MAAP secret name holding the SSH private key (PEM).")
+
     args = parser.parse_args()
 
     work_dir = Path(args.output)
@@ -361,6 +372,21 @@ def main() -> int:
         cog_s3_url = upload_cog_to_key(cog_path, args.s3_bucket, s3_key, args.role_arn)
         item.assets["asset"].href = cog_s3_url
         write_stac_catalog(item, args.collection_id, stac_dir)
+
+        # Optional SCP delivery — failures are logged but non-fatal so the
+        # STAC catalog stays consistent with what's in S3.
+        if args.scp_host:
+            from delivery import upload_via_scp
+            ok = upload_via_scp(
+                local_path=cog_path,
+                host=args.scp_host,
+                port=args.scp_port,
+                user=args.scp_user,
+                remote_dir=args.scp_remote_dir,
+                key_secret_name=args.scp_key_secret_name,
+            )
+            if not ok:
+                logger.warning("SCP delivery did not complete; continuing")
 
         logger.info(f"COG ingest complete: {cog_s3_url}")
         return 0

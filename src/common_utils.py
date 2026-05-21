@@ -346,6 +346,18 @@ class ConfigUtils:
         parser.add_argument("--local-download-path", default="output",
                             help="Local working directory for downloads/outputs")
 
+        parser.add_argument("--scp-host", default=None,
+                            help="Optional: SCP delivery hostname/IP. When set, "
+                                 "the worker also pushes each COG via SCP after "
+                                 "S3 upload.")
+        parser.add_argument("--scp-port", type=int, default=22)
+        parser.add_argument("--scp-user", default=None)
+        parser.add_argument("--scp-remote-dir", default=None,
+                            help="Remote directory; the COG is written as "
+                                 "<remote-dir>/<filename> (path flattened).")
+        parser.add_argument("--scp-key-secret-name", default=None,
+                            help="MAAP secret name holding the SSH private key (PEM).")
+
         return parser
 
     @staticmethod
