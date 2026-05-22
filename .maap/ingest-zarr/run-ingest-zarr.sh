@@ -9,8 +9,6 @@ root_dir=$(dirname $(dirname "${basedir}"))
 
 echo "Running Frozon ISS Zarr ingest worker..."
 
-source activate ingest
-
 if [[ ! -f "_job.json" ]]; then
     echo "ERROR: _job.json file not found"
     exit 1
@@ -99,5 +97,5 @@ fi
 args+=(--output output)
 
 worker_script="${root_dir}/src/ingest_zarr.py"
-echo "Executing: python ${worker_script} ${args[@]}"
-conda run -n ingest --live-stream python "${worker_script}" "${args[@]}"
+echo "Executing: python3 ${worker_script} ${args[@]}"
+python3 "${worker_script}" "${args[@]}"

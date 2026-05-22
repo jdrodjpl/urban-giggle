@@ -1,0 +1,16 @@
+gdal
+rasterio
+rioxarray
+xarray
+zarr>=3
+numpy
+pandas
+dask
+pystac
+rio-stac
+fsspec
+s3fs
+boto3
+backoff
+maap-py
+earthaccess

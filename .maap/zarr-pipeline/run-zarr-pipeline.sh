@@ -8,8 +8,6 @@ root_dir=$(dirname $(dirname "${basedir}"))
 
 echo "Running Frozon ISS Zarr pipeline..."
 
-source activate ingest
-
 if [[ ! -f "_job.json" ]]; then
     echo "ERROR: _job.json file not found"
     exit 1
@@ -165,5 +163,5 @@ fi
 args+=(--retain-days "${retain_days}")
 
 pipeline_script="${root_dir}/src/pipeline_zarr.py"
-echo "Executing: python ${pipeline_script} ${args[@]}"
-conda run -n ingest --live-stream python "${pipeline_script}" "${args[@]}"
+echo "Executing: python3 ${pipeline_script} ${args[@]}"
+python3 "${pipeline_script}" "${args[@]}"

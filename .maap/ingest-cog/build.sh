@@ -1,14 +1,16 @@
 #!/usr/bin/env bash
-# Build script for the per-TIFF Frozon COG ingest worker.
+# Build script for the Frozon COG ingest worker. No conda — pip only.
 set -euo pipefail
 
 basedir=$( cd "$(dirname "$0")" ; pwd -P )
-root_dir=$(dirname $(dirname "${basedir}"))
 
 echo "Building Frozon ISS COG ingest worker environment..."
-pushd "${basedir}"
-conda env update -n ingest --file environment.yml
-popd
+echo "PYTHON: $(which python3) ($(python3 --version 2>&1))"
 
-conda run -n ingest pip install jq
+python3 -m pip install --upgrade pip
+python3 -m pip install -r "${basedir}/requirements.txt"
+
+# Smoke import — fail the build, not the runtime, if a hard dep is missing.
+python3 -c "import rasterio, rioxarray, pystac, rio_stac, boto3, earthaccess, paramiko, scp; print('deps OK')"
+
 echo "Build complete!"

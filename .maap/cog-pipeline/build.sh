@@ -1,15 +1,15 @@
 #!/usr/bin/env bash
-# Build script for the Frozon COG pipeline algorithm on MAAP.
+# Build script for the Frozon COG pipeline orchestrator. No conda — pip only.
 set -euo pipefail
 
 basedir=$( cd "$(dirname "$0")" ; pwd -P )
-root_dir=$(dirname $(dirname "${basedir}"))
 
-echo "Building Frozon ISS COG pipeline environment..."
-pushd "${basedir}"
-conda env update -n ingest --file environment.yml
-popd
+echo "Building Frozon ISS COG pipeline orchestrator environment..."
+echo "PYTHON: $(which python3) ($(python3 --version 2>&1))"
 
-# For input parsing in the run scripts.
-conda run -n ingest pip install jq
+python3 -m pip install --upgrade pip
+python3 -m pip install -r "${basedir}/requirements.txt"
+
+python3 -c "import pystac, boto3, backoff, earthaccess; print('deps OK')"
+
 echo "Build complete!"

@@ -8,8 +8,6 @@ root_dir=$(dirname $(dirname "${basedir}"))
 
 echo "Running Frozon ISS COG ingest worker..."
 
-source activate ingest
-
 if [[ ! -f "_job.json" ]]; then
     echo "ERROR: _job.json file not found"
     exit 1
@@ -116,5 +114,5 @@ if [[ -n "${scp_host}" ]]; then
 fi
 
 worker_script="${root_dir}/src/ingest_cog.py"
-echo "Executing: python ${worker_script} ${args[@]}"
-conda run -n ingest --live-stream python "${worker_script}" "${args[@]}"
+echo "Executing: python3 ${worker_script} ${args[@]}"
+python3 "${worker_script}" "${args[@]}"
