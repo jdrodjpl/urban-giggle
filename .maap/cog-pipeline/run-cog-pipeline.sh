@@ -163,7 +163,8 @@ if [[ -n "${cmr_temporal_end}" ]]; then
     args+=(--cmr-temporal-end "${cmr_temporal_end}")
 fi
 if [[ -n "${cmr_bbox}" ]]; then
-    args+=(--cmr-bbox "${cmr_bbox}")
+    # Use --flag=value to keep argparse from misreading a leading '-' as another flag.
+    args+=(--cmr-bbox="${cmr_bbox}")
 fi
 if [[ -n "${cmr_granule_ids}" ]]; then
     args+=(--cmr-granule-ids "${cmr_granule_ids}")
