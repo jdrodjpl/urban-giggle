@@ -200,7 +200,11 @@ def dump_zarr_slices_to_tiffs(local_zarr: Path, output_dir: Path) -> List[Path]:
         else:
             dt = datetime.fromtimestamp(int(ts) / 1e9, tz=timezone.utc)
 
-        fname = f"_zarr_slice_{dt.strftime('%Y%m%dT%H%M%S')}_{t_idx:06d}.tif"
+        # Include trailing 'Z_' so the filename matches a typical satellite
+        # time_regex like `_(?P<start_date>\d{8}T\d{6})Z_`. The streaming
+        # script also has an mtime fallback via os.utime below, but matching
+        # by name keeps the pre-flight validation happy.
+        fname = f"_zarr_slice_{dt.strftime('%Y%m%dT%H%M%S')}Z_{t_idx:06d}.tif"
         path = output_dir / fname
 
         with rasterio.open(
