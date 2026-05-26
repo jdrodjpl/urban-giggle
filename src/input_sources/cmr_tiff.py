@@ -113,7 +113,14 @@ class CMRTiffSource:
                     },
                 ))
 
-        refs.sort(key=lambda r: r.name)
+        # Sort newest first by filename — OPERA RTC names embed
+        # `_YYYYMMDDTHHMMSSZ_` for the acquisition time, so reverse-sort
+        # on filename puts the most recent granules at the top. This
+        # matters when `limit` is set: without sorting, CMR returns
+        # oldest-first and `limit` would silently truncate to the
+        # *oldest* N granules, which is rarely what you want for a
+        # rolling-window pipeline.
+        refs.sort(key=lambda r: r.name, reverse=True)
         if self.limit:
             refs = refs[: self.limit]
         logger.info(f"Resolved {len(refs)} TIFF input(s) from {self.description}")
