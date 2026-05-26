@@ -103,33 +103,48 @@ def stage_inputs_from_https(urls: List[str], local_dir: Path,
     return paths
 
 
-def prune_to_window(local_zarr: Path, retain_days: int,
-                    now: Optional[datetime] = None) -> bool:
-    """Drop Zarr time slices older than (now - retain_days). Returns True
-    iff any slices were dropped. Refuses to empty the store: if every
-    slice would be removed, leaves the Zarr untouched (the caller should
-    investigate upstream)."""
+def prune_to_window(local_zarr: Path, retain_days: int) -> bool:
+    """Keep only the most recent `retain_days` of slices, relative to the
+    newest slice in the store (NOT relative to wall-clock now).
+
+    Rationale: satellite products have ingest latency (e.g. OPERA RTC
+    lags ~6 days), so "the last 7 days" anchored on `now` would prune
+    slices that just landed. Anchoring on `max(time)` gives a stable
+    7-day-of-available-data window regardless of when the pipeline ran.
+
+    Returns True iff any slices were dropped. With this semantics the
+    newest slice is by definition within the window, so the store can
+    never be emptied — the safety floor is preserved as a defensive
+    check anyway."""
     if retain_days <= 0:
         return False
 
-    now = now or datetime.now(timezone.utc)
-    cutoff = now - timedelta(days=retain_days)
-    cutoff_np = np.datetime64(cutoff.replace(tzinfo=None))
-
     ds = xr.open_zarr(str(local_zarr), consolidated=False, decode_times=True)
     times = ds.coords['time'].values
+    total = len(times)
+    if total == 0:
+        ds.close()
+        return False
+
+    newest = times.max()
+    # numpy datetime arithmetic is in the array's unit; coerce to days.
+    cutoff_np = newest - np.timedelta64(retain_days, 'D')
     keep_mask = times >= cutoff_np
     kept = int(keep_mask.sum())
-    total = len(times)
 
     if kept == total:
-        logger.info(f"prune_to_window: all {total} slice(s) within last {retain_days} days; no-op")
+        logger.info(
+            f"prune_to_window: all {total} slice(s) within last "
+            f"{retain_days} days of newest ({newest}); no-op"
+        )
         ds.close()
         return False
     if kept == 0:
+        # Shouldn't be reachable with newest-anchored cutoff, but log loudly
+        # if it ever happens (e.g., time coord contains NaT only).
         logger.warning(
-            f"prune_to_window: ALL {total} slice(s) older than {retain_days} days; "
-            "refusing to empty the Zarr (safety floor — investigate upstream)"
+            f"prune_to_window: keep mask matched 0 of {total} slice(s); "
+            "refusing to empty the Zarr (safety floor — investigate)"
         )
         ds.close()
         return False
@@ -146,7 +161,7 @@ def prune_to_window(local_zarr: Path, retain_days: int,
     os.rename(str(tmp_path), str(local_zarr))
     logger.info(
         f"prune_to_window: dropped {total - kept} of {total} slice(s) "
-        f"(cutoff {cutoff.isoformat()})"
+        f"(newest {newest}, cutoff {cutoff_np})"
     )
     return True
 
@@ -409,8 +424,10 @@ def main() -> int:
                         help="MAAP secret name holding EDL bearer token (or "
                              "username\\npassword). Required with --input-https-urls.")
     parser.add_argument("--retain-days", type=int, default=0,
-                        help="If > 0, prune Zarr time slices older than "
-                             "(now - N days) after append/build. 0 disables pruning.")
+                        help="If > 0, prune Zarr slices older than "
+                             "(newest_slice - N days) after append/build. "
+                             "Cutoff is anchored on the newest slice in the "
+                             "store, not wall-clock now.")
     parser.add_argument("--collection-id", required=True)
     parser.add_argument("--s3-bucket", required=True)
     parser.add_argument("--s3-prefix", default="")

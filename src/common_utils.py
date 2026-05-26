@@ -450,10 +450,12 @@ class ConfigUtils:
                             help="Optional MAAP secret name for the webhook bearer token.")
 
         parser.add_argument("--retain-days", type=int, default=0,
-                            help="If > 0, prune Zarr time slices older than "
-                                 "(now - N days) after append/build. 0 disables "
-                                 "pruning. Safety: if all slices would be dropped, "
-                                 "the Zarr is left untouched.")
+                            help="If > 0, after build/append prune Zarr time "
+                                 "slices older than (newest_slice - N days). "
+                                 "Cutoff is anchored on the *newest slice in "
+                                 "the store*, NOT wall-clock now — so the "
+                                 "rolling window survives upstream processing "
+                                 "lag. 0 disables pruning.")
 
         return parser
 
