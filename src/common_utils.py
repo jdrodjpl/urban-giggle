@@ -347,10 +347,9 @@ class ConfigUtils:
                             help="Local working directory for downloads/outputs")
 
         parser.add_argument("--retain-days", type=int, default=0,
-                            help="If > 0, after all workers complete delete COG "
-                                 "output files older than (newest_date_folder - "
-                                 "N days) from the S3 output prefix. Cutoff is "
-                                 "anchored on the newest date, NOT wall-clock now.")
+                            help="If > 0, keep only the N most recent calendar "
+                                 "days of COG outputs in S3; delete the rest. "
+                                 "Counts distinct date-folders, not a time window.")
 
         parser.add_argument("--scp-host", default=None,
                             help="Optional: SCP delivery hostname/IP. When set, "
@@ -456,12 +455,10 @@ class ConfigUtils:
                             help="Optional MAAP secret name for the webhook bearer token.")
 
         parser.add_argument("--retain-days", type=int, default=0,
-                            help="If > 0, after build/append prune Zarr time "
-                                 "slices older than (newest_slice - N days). "
-                                 "Cutoff is anchored on the *newest slice in "
-                                 "the store*, NOT wall-clock now — so the "
-                                 "rolling window survives upstream processing "
-                                 "lag. 0 disables pruning.")
+                            help="If > 0, keep only the N most recent calendar "
+                                 "days of Zarr time slices; drop the rest. "
+                                 "Counts distinct dates in the store, not a "
+                                 "time window. 0 disables pruning.")
 
         return parser
 

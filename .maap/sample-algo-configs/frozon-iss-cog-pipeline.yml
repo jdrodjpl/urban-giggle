@@ -133,7 +133,7 @@ inputs:
     name: earthdata_token_secret_name
     required: false
   - default: "0"
-    description: If > 0, delete COGs older than (newest_date_folder - N days) from the S3 output prefix after cataloging. Anchored on newest available date, not wall-clock now.
+    description: If > 0, keep only the N most recent calendar days of COG outputs in S3 after cataloging; delete the rest.
     name: retain_days
     required: false
   - default: ""

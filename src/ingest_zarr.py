@@ -104,18 +104,16 @@ def stage_inputs_from_https(urls: List[str], local_dir: Path,
 
 
 def prune_to_window(local_zarr: Path, retain_days: int) -> bool:
-    """Keep only the most recent `retain_days` of slices, relative to the
-    newest slice in the store (NOT relative to wall-clock now).
+    """Keep slices from the `retain_days` most recent calendar days of
+    data; drop everything else.
 
-    Rationale: satellite products have ingest latency (e.g. OPERA RTC
-    lags ~6 days), so "the last 7 days" anchored on `now` would prune
-    slices that just landed. Anchoring on `max(time)` gives a stable
-    7-day-of-available-data window regardless of when the pipeline ran.
+    "Last N days of available data" means we count distinct calendar
+    dates in the store, sort newest-first, keep the top N dates, and
+    drop all slices that fall on older dates. This is a retention-period
+    count, NOT a sliding time window — sparse data never gets pruned
+    below N days even if those days are spread far apart.
 
-    Returns True iff any slices were dropped. With this semantics the
-    newest slice is by definition within the window, so the store can
-    never be emptied — the safety floor is preserved as a defensive
-    check anyway."""
+    Returns True iff any slices were dropped."""
     if retain_days <= 0:
         return False
 
@@ -126,25 +124,18 @@ def prune_to_window(local_zarr: Path, retain_days: int) -> bool:
         ds.close()
         return False
 
-    newest = times.max()
-    # numpy datetime arithmetic is in the array's unit; coerce to days.
-    cutoff_np = newest - np.timedelta64(retain_days, 'D')
-    keep_mask = times >= cutoff_np
+    # Extract distinct calendar dates and keep the most recent N.
+    dates = np.array([t.astype('datetime64[D]') for t in times])
+    unique_dates = sorted(set(dates), reverse=True)
+    dates_to_keep = set(unique_dates[:retain_days])
+
+    keep_mask = np.array([d in dates_to_keep for d in dates])
     kept = int(keep_mask.sum())
 
     if kept == total:
         logger.info(
-            f"prune_to_window: all {total} slice(s) within last "
-            f"{retain_days} days of newest ({newest}); no-op"
-        )
-        ds.close()
-        return False
-    if kept == 0:
-        # Shouldn't be reachable with newest-anchored cutoff, but log loudly
-        # if it ever happens (e.g., time coord contains NaT only).
-        logger.warning(
-            f"prune_to_window: keep mask matched 0 of {total} slice(s); "
-            "refusing to empty the Zarr (safety floor — investigate)"
+            f"prune_to_window: only {len(unique_dates)} distinct date(s), "
+            f"all within retain_days={retain_days}; no-op"
         )
         ds.close()
         return False
@@ -159,9 +150,11 @@ def prune_to_window(local_zarr: Path, retain_days: int) -> bool:
 
     shutil.rmtree(local_zarr)
     os.rename(str(tmp_path), str(local_zarr))
+
+    dates_dropped = sorted(d for d in unique_dates if d not in dates_to_keep)
     logger.info(
-        f"prune_to_window: dropped {total - kept} of {total} slice(s) "
-        f"(newest {newest}, cutoff {cutoff_np})"
+        f"prune_to_window: kept {len(dates_to_keep)} newest date(s), "
+        f"dropped {total - kept} slice(s) from {dates_dropped}"
     )
     return True
 
@@ -424,10 +417,10 @@ def main() -> int:
                         help="MAAP secret name holding EDL bearer token (or "
                              "username\\npassword). Required with --input-https-urls.")
     parser.add_argument("--retain-days", type=int, default=0,
-                        help="If > 0, prune Zarr slices older than "
-                             "(newest_slice - N days) after append/build. "
-                             "Cutoff is anchored on the newest slice in the "
-                             "store, not wall-clock now.")
+                        help="If > 0, keep only the N most recent calendar "
+                             "days of data after build/append; drop slices "
+                             "from older dates. Counts distinct dates, not "
+                             "a time window.")
     parser.add_argument("--collection-id", required=True)
     parser.add_argument("--s3-bucket", required=True)
     parser.add_argument("--s3-prefix", default="")

@@ -61,7 +61,7 @@ inputs:
     name: earthdata_token_secret_name
     required: false
   - default: "0"
-    description: If > 0, prune Zarr time slices older than (now - N days) after build/append
+    description: If > 0, keep only the N most recent calendar days of Zarr slices after build/append; drop the rest
     name: retain_days
     required: false
 queue: maap-dps-worker-16gb

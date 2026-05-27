@@ -115,12 +115,14 @@ async def submit_cog_job(args: argparse.Namespace, maap, input_ref: InputRef) ->
 
 def cleanup_old_cogs(s3_bucket: str, s3_prefix: str, collection_id: str,
                      retain_days: int, role_arn: Optional[str] = None) -> int:
-    """Delete COGs older than (newest_date_folder - retain_days) from S3.
+    """Keep only the `retain_days` most recent calendar days of COGs in S3;
+    delete everything else.
 
-    COGs live at `<prefix>/<collection>/YYYY/MM/DD/<file>.tif`. We parse
-    the date from the path, find the newest date, and delete everything
-    more than `retain_days` before it. Anchored on the newest available
-    date, NOT wall-clock now — same semantics as the Zarr prune.
+    COGs live at `<prefix>/<collection>/YYYY/MM/DD/<file>.tif`. We collect
+    all distinct date-folders, sort newest-first, keep the top N, and
+    delete objects from the rest. This is "last N days of available data",
+    not a sliding time window — so sparse data never gets pruned below N
+    days even if those days are spread far apart.
 
     Returns the number of objects deleted."""
     if retain_days <= 0:
@@ -151,27 +153,26 @@ def cleanup_old_cogs(s3_bucket: str, s3_prefix: str, collection_id: str,
         logger.info(f"cleanup_old_cogs: no date-folders found under s3://{s3_bucket}/{prefix}")
         return 0
 
-    newest = max(objects_by_date.keys())
-    cutoff = newest - timedelta(days=retain_days)
+    sorted_dates = sorted(objects_by_date.keys(), reverse=True)
+    dates_to_keep = set(sorted_dates[:retain_days])
 
     to_delete: list[str] = []
     for d, keys in objects_by_date.items():
-        if d < cutoff:
+        if d not in dates_to_keep:
             to_delete.extend(keys)
 
     if not to_delete:
         logger.info(
-            f"cleanup_old_cogs: all dates within {retain_days} days of "
-            f"newest ({newest}); nothing to delete"
+            f"cleanup_old_cogs: only {len(sorted_dates)} date(s) present, "
+            f"all within retain_days={retain_days}; nothing to delete"
         )
         return 0
 
-    dates_dropped = sorted(set(
-        d for d, keys in objects_by_date.items() if d < cutoff
-    ))
+    dates_dropped = sorted(d for d in objects_by_date if d not in dates_to_keep)
     logger.info(
-        f"cleanup_old_cogs: deleting {len(to_delete)} object(s) from "
-        f"date(s) {dates_dropped} (newest {newest}, cutoff {cutoff})"
+        f"cleanup_old_cogs: keeping {len(dates_to_keep)} newest date(s) "
+        f"({sorted(dates_to_keep)}), deleting {len(to_delete)} object(s) "
+        f"from {dates_dropped}"
     )
 
     for i in range(0, len(to_delete), 1000):
