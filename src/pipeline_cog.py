@@ -11,12 +11,16 @@ import argparse
 import asyncio
 import logging
 import os
+import re
 import sys
+from datetime import date, timedelta
+from typing import Optional
+
 import backoff
 from maap.dps.dps_job import DPSJob
 
 from catalog_orchestration import catalog_products
-from common_utils import ConfigUtils, LoggingUtils, MaapUtils
+from common_utils import AWSUtils, ConfigUtils, LoggingUtils, MaapUtils
 from input_sources import InputRef, ensure_edl_login, make_source
 
 logging.basicConfig(
@@ -109,6 +113,77 @@ async def submit_cog_job(args: argparse.Namespace, maap, input_ref: InputRef) ->
 
 
 
+def cleanup_old_cogs(s3_bucket: str, s3_prefix: str, collection_id: str,
+                     retain_days: int, role_arn: Optional[str] = None) -> int:
+    """Delete COGs older than (newest_date_folder - retain_days) from S3.
+
+    COGs live at `<prefix>/<collection>/YYYY/MM/DD/<file>.tif`. We parse
+    the date from the path, find the newest date, and delete everything
+    more than `retain_days` before it. Anchored on the newest available
+    date, NOT wall-clock now — same semantics as the Zarr prune.
+
+    Returns the number of objects deleted."""
+    if retain_days <= 0:
+        return 0
+
+    safe_coll = collection_id.replace('/', '_')
+    parts = []
+    if s3_prefix:
+        parts.append(s3_prefix.strip('/'))
+    parts.append(safe_coll)
+    prefix = '/'.join(parts) + '/'
+
+    s3 = AWSUtils.get_s3_client(role_arn=role_arn, bucket_name=s3_bucket)
+    paginator = s3.get_paginator('list_objects_v2')
+
+    date_pattern = re.compile(r'/(\d{4})/(\d{2})/(\d{2})/')
+    objects_by_date: dict[date, list[str]] = {}
+
+    for page in paginator.paginate(Bucket=s3_bucket, Prefix=prefix):
+        for obj in page.get('Contents', []):
+            key = obj['Key']
+            m = date_pattern.search(key)
+            if m:
+                d = date(int(m.group(1)), int(m.group(2)), int(m.group(3)))
+                objects_by_date.setdefault(d, []).append(key)
+
+    if not objects_by_date:
+        logger.info(f"cleanup_old_cogs: no date-folders found under s3://{s3_bucket}/{prefix}")
+        return 0
+
+    newest = max(objects_by_date.keys())
+    cutoff = newest - timedelta(days=retain_days)
+
+    to_delete: list[str] = []
+    for d, keys in objects_by_date.items():
+        if d < cutoff:
+            to_delete.extend(keys)
+
+    if not to_delete:
+        logger.info(
+            f"cleanup_old_cogs: all dates within {retain_days} days of "
+            f"newest ({newest}); nothing to delete"
+        )
+        return 0
+
+    dates_dropped = sorted(set(
+        d for d, keys in objects_by_date.items() if d < cutoff
+    ))
+    logger.info(
+        f"cleanup_old_cogs: deleting {len(to_delete)} object(s) from "
+        f"date(s) {dates_dropped} (newest {newest}, cutoff {cutoff})"
+    )
+
+    for i in range(0, len(to_delete), 1000):
+        batch = to_delete[i:i + 1000]
+        s3.delete_objects(
+            Bucket=s3_bucket,
+            Delete={'Objects': [{'Key': k} for k in batch]},
+        )
+
+    return len(to_delete)
+
+
 async def main() -> None:
     args = parse_arguments()
     try:
@@ -145,6 +220,16 @@ async def main() -> None:
         ])
 
         catalog_products(args, maap, cog_jobs, primary_asset_keys=("asset",))
+
+        retain = getattr(args, 'retain_days', 0) or 0
+        if retain > 0:
+            deleted = cleanup_old_cogs(
+                args.s3_bucket, args.s3_prefix, args.collection_id,
+                retain, args.role_arn,
+            )
+            if deleted:
+                logger.info(f"Cleaned up {deleted} old COG object(s)")
+
         logger.info("Frozon COG pipeline completed successfully.")
 
     except ValueError as e:

@@ -346,6 +346,12 @@ class ConfigUtils:
         parser.add_argument("--local-download-path", default="output",
                             help="Local working directory for downloads/outputs")
 
+        parser.add_argument("--retain-days", type=int, default=0,
+                            help="If > 0, after all workers complete delete COG "
+                                 "output files older than (newest_date_folder - "
+                                 "N days) from the S3 output prefix. Cutoff is "
+                                 "anchored on the newest date, NOT wall-clock now.")
+
         parser.add_argument("--scp-host", default=None,
                             help="Optional: SCP delivery hostname/IP. When set, "
                                  "the worker also pushes each COG via SCP after "

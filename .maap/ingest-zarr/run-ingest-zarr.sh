@@ -97,5 +97,11 @@ fi
 args+=(--output output)
 
 worker_script="${root_dir}/src/ingest_zarr.py"
+echo "=== Runtime python state ==="
+echo "PATH:   ${PATH}"
+echo "python3 path: $(which python3 || echo 'NOT FOUND')"
+python3 -c "import sys; print('python3 executable:', sys.executable); print('sys.path:', sys.path[:5])" 2>&1 || true
+python3 -m pip list 2>/dev/null | grep -iE "rasterio|zarr|xarray|earthaccess" || echo "(no matching pkgs)"
+echo "==========================="
 echo "Executing: python3 ${worker_script} ${args[@]}"
 python3 "${worker_script}" "${args[@]}"

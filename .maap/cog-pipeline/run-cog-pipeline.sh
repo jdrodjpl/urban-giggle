@@ -44,6 +44,7 @@ cmr_bbox=$(jq -r '.params.cmr_bbox // empty' _job.json)
 cmr_granule_ids=$(jq -r '.params.cmr_granule_ids // empty' _job.json)
 cmr_prefer_https=$(jq -r '.params.cmr_prefer_https // "true"' _job.json)
 earthdata_token_secret_name=$(jq -r '.params.earthdata_token_secret_name // empty' _job.json)
+retain_days=$(jq -r '.params.retain_days // "0"' _job.json)
 scp_host=$(jq -r '.params.scp_host // empty' _job.json)
 scp_port=$(jq -r '.params.scp_port // "22"' _job.json)
 scp_user=$(jq -r '.params.scp_user // empty' _job.json)
@@ -145,6 +146,7 @@ fi
 if [[ -n "${limit}" ]]; then
     args+=(--limit "${limit}")
 fi
+args+=(--retain-days "${retain_days}")
 if [[ -n "${local_download_path}" && "${local_download_path}" != "output" ]]; then
     args+=(--local-download-path "${local_download_path}")
 fi

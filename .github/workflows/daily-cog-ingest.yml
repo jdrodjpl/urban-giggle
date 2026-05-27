@@ -1,0 +1,44 @@
+name: Daily COG ingest
+
+on:
+  schedule:
+    # Run daily at 06:15 UTC — offset from Zarr cron by 15 min so they
+    # don't compete for MAAP DPS queue slots at the same instant.
+    - cron: "15 6 * * *"
+  workflow_dispatch:
+    inputs:
+      temporal_window_days:
+        description: "Temporal search window in days (default 14)"
+        default: "14"
+      limit:
+        description: "Max granules to fetch (leave blank for no limit)"
+        default: ""
+      retain_days:
+        description: "Delete COGs older than (newest_date - N days)"
+        default: "7"
+      collection_id:
+        description: "STAC collection ID"
+        default: "frozon-s1-cog"
+
+jobs:
+  submit:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install maap-py
+        run: pip install maap-py
+
+      - name: Submit COG pipeline job
+        env:
+          MAAP_TOKEN: ${{ secrets.MAAP_TOKEN }}
+          MAAP_HOST: "api.maap-project.org"
+          TEMPORAL_WINDOW_DAYS: ${{ github.event.inputs.temporal_window_days || '14' }}
+          LIMIT: ${{ github.event.inputs.limit || '' }}
+          RETAIN_DAYS: ${{ github.event.inputs.retain_days || '7' }}
+          COLLECTION_ID: ${{ github.event.inputs.collection_id || 'frozon-s1-cog' }}
+        run: python scripts/submit_cog_pipeline.py
