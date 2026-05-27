@@ -51,7 +51,9 @@ def main() -> int:
         print("ERROR: MAAP_TOKEN env var is required.", file=sys.stderr)
         return 1
 
-    maap = MAAP(maap_host=env("MAAP_HOST"), token=token)
+    # maap-py reads auth from env vars, not constructor args.
+    os.environ["MAAP_PGT"] = token
+    maap = MAAP(maap_host=env("MAAP_HOST"))
 
     end = datetime.now(timezone.utc).date()
     window = int(env("TEMPORAL_WINDOW_DAYS"))

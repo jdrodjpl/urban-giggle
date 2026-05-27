@@ -53,7 +53,10 @@ def main() -> int:
         print("ERROR: MAAP_TOKEN env var is required for headless auth.", file=sys.stderr)
         return 1
 
-    maap = MAAP(maap_host=maap_host, token=token)
+    # maap-py reads auth from env vars, not constructor args.
+    # Set MAAP_PGT so the client picks it up during init.
+    os.environ["MAAP_PGT"] = token
+    maap = MAAP(maap_host=maap_host)
 
     end = datetime.now(timezone.utc).date()
     window = int(env("TEMPORAL_WINDOW_DAYS"))
