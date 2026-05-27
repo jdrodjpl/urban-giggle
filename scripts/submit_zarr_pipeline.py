@@ -49,13 +49,11 @@ def env(key: str) -> str:
 def main() -> int:
     maap_host = env("MAAP_HOST")
     token = os.environ.get("MAAP_TOKEN")
-    if not token:
-        print("ERROR: MAAP_TOKEN env var is required for headless auth.", file=sys.stderr)
-        return 1
-
-    # maap-py reads auth from env vars, not constructor args.
-    # Set MAAP_PGT so the client picks it up during init.
-    os.environ["MAAP_PGT"] = token
+    if token:
+        # Running outside the ADE (e.g. GitHub Actions) — set MAAP_PGT
+        # so maap-py picks up the auth token during init.
+        os.environ["MAAP_PGT"] = token
+    # Inside the ADE, no token needed — session auth is implicit.
     maap = MAAP(maap_host=maap_host)
 
     end = datetime.now(timezone.utc).date()
