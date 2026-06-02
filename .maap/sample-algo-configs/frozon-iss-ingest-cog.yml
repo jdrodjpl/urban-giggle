@@ -1,6 +1,6 @@
 algorithm_description: Frozon ISS COG Ingest Worker — converts a single TIFF input to a Cloud Optimized GeoTIFF and uploads it to S3 with a STAC catalog.
 algorithm_name: frozon-iss-ingest-cog
-algorithm_version: main
+algorithm_version: main-v2
 build_command: urban-giggle/.maap/ingest-cog/build.sh
 disk_space: 50GB
 docker_container_url: mas.maap-project.org/root/maap-workspaces/custom_images/maap_base:v4.2.0

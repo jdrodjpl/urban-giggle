@@ -23,7 +23,7 @@ from maap.maap import MAAP
 DEFAULTS = {
     "MAAP_HOST":             "api.maap-project.org",
     "ALGO_ID":               "frozon-iss-cog-pipeline",
-    "ALGO_VERSION":          "main",
+    "ALGO_VERSION":          "main-v2",
     "QUEUE":                 "maap-dps-worker-8gb",
     "INPUT_SOURCE_TYPE":     "cmr",
     "CMR_SHORT_NAME":        "OPERA_L2_RTC-S1_V1",
