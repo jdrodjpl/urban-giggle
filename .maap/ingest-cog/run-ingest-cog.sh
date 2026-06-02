@@ -114,5 +114,14 @@ if [[ -n "${scp_host}" ]]; then
 fi
 
 worker_script="${root_dir}/src/ingest_cog.py"
+
+# rasterio's pip wheel ships PROJ binaries but not proj.db; point it at
+# pyproj's data dir so CRS lookups (e.g. rio_stac importing EPSG:4326)
+# don't blow up on 'Cannot find proj.db'.
+export PROJ_DATA=$(python3 -c "import pyproj; print(pyproj.datadir.get_data_dir())" 2>/dev/null || echo "")
+if [[ -n "${PROJ_DATA}" ]]; then
+    echo "PROJ_DATA=${PROJ_DATA}"
+fi
+
 echo "Executing: python3 ${worker_script} ${args[@]}"
 python3 "${worker_script}" "${args[@]}"

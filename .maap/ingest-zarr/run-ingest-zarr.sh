@@ -97,6 +97,14 @@ fi
 args+=(--output output)
 
 worker_script="${root_dir}/src/ingest_zarr.py"
+
+# rasterio's pip wheel ships PROJ binaries but not proj.db; point it at
+# pyproj's data dir so CRS lookups don't fail on 'Cannot find proj.db'.
+export PROJ_DATA=$(python3 -c "import pyproj; print(pyproj.datadir.get_data_dir())" 2>/dev/null || echo "")
+if [[ -n "${PROJ_DATA}" ]]; then
+    echo "PROJ_DATA=${PROJ_DATA}"
+fi
+
 echo "=== Runtime python state ==="
 echo "PATH:   ${PATH}"
 echo "python3 path: $(which python3 || echo 'NOT FOUND')"
