@@ -9,6 +9,8 @@ root_dir=$(dirname $(dirname "${basedir}"))
 
 echo "Running Frozon ISS Zarr ingest worker..."
 
+source activate ingest
+
 if [[ ! -f "_job.json" ]]; then
     echo "ERROR: _job.json file not found"
     exit 1
@@ -97,23 +99,5 @@ fi
 args+=(--output output)
 
 worker_script="${root_dir}/src/ingest_zarr.py"
-
-unset PROJ_DATA PROJ_LIB
-for candidate in /opt/conda/share/proj /usr/share/proj \
-                 "$(python3 -c 'import pyproj; print(pyproj.datadir.get_data_dir())' 2>/dev/null)"; do
-    if [[ -n "${candidate}" && -f "${candidate}/proj.db" ]]; then
-        export PROJ_DATA="${candidate}"
-        export PROJ_LIB="${candidate}"
-        echo "PROJ_DATA=${PROJ_DATA}"
-        break
-    fi
-done
-
-echo "=== Runtime python state ==="
-echo "PATH:   ${PATH}"
-echo "python3 path: $(which python3 || echo 'NOT FOUND')"
-python3 -c "import sys; print('python3 executable:', sys.executable); print('sys.path:', sys.path[:5])" 2>&1 || true
-python3 -m pip list 2>/dev/null | grep -iE "rasterio|zarr|xarray|earthaccess" || echo "(no matching pkgs)"
-echo "==========================="
-echo "Executing: python3 ${worker_script} ${args[@]}"
-python3 "${worker_script}" "${args[@]}"
+echo "Executing: python ${worker_script} ${args[@]}"
+conda run -n ingest --live-stream python "${worker_script}" "${args[@]}"

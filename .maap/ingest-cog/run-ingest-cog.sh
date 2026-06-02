@@ -8,6 +8,8 @@ root_dir=$(dirname $(dirname "${basedir}"))
 
 echo "Running Frozon ISS COG ingest worker..."
 
+source activate ingest
+
 if [[ ! -f "_job.json" ]]; then
     echo "ERROR: _job.json file not found"
     exit 1
@@ -115,19 +117,5 @@ fi
 
 worker_script="${root_dir}/src/ingest_cog.py"
 
-# Find a proj.db rasterio can read. Prefer the conda base image's
-# system-wide PROJ (newest, well-maintained) over pyproj's bundled one
-# (sometimes ships an older proj.db that fails rasterio's version check).
-unset PROJ_DATA PROJ_LIB
-for candidate in /opt/conda/share/proj /usr/share/proj \
-                 "$(python3 -c 'import pyproj; print(pyproj.datadir.get_data_dir())' 2>/dev/null)"; do
-    if [[ -n "${candidate}" && -f "${candidate}/proj.db" ]]; then
-        export PROJ_DATA="${candidate}"
-        export PROJ_LIB="${candidate}"
-        echo "PROJ_DATA=${PROJ_DATA}"
-        break
-    fi
-done
-
-echo "Executing: python3 ${worker_script} ${args[@]}"
-python3 "${worker_script}" "${args[@]}"
+echo "Executing: python ${worker_script} ${args[@]}"
+conda run -n ingest --live-stream python "${worker_script}" "${args[@]}"
