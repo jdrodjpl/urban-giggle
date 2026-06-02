@@ -8,15 +8,23 @@ root_dir=$(dirname $(dirname "${basedir}"))
 
 echo "Running Frozon ISS COG ingest worker..."
 
-# Initialize conda for this shell, then activate. `source activate` is the
-# deprecated form and was failing with "Could not find conda environment".
-if [[ -f /opt/conda/etc/profile.d/conda.sh ]]; then
-    source /opt/conda/etc/profile.d/conda.sh
+echo "=== Runtime conda discovery ==="
+echo "ls /opt/conda/envs/:"; ls -la /opt/conda/envs/ 2>&1 || echo "  /opt/conda/envs not found"
+echo "ls /opt/conda/envs/ingest/bin/ (top 5):"
+ls /opt/conda/envs/ingest/bin/ 2>&1 | head -5
+echo "find any 'ingest' env on disk:"
+find / -maxdepth 6 -type d -name ingest 2>/dev/null | head
+echo "================================"
+
+# Use the env's python directly — bypass conda activate.
+if [[ ! -x /opt/conda/envs/ingest/bin/python ]]; then
+    echo "FATAL: /opt/conda/envs/ingest/bin/python not found." >&2
+    echo "This means the build's 'conda env create' didn't actually create the env, OR" >&2
+    echo "the runtime conda lives somewhere other than /opt/conda." >&2
+    exit 1
 fi
-echo "=== Runtime conda state ==="
-conda info --envs || true
-echo "==========================="
-conda activate ingest
+ENV_PYTHON=/opt/conda/envs/ingest/bin/python
+echo "Using ${ENV_PYTHON}"
 
 if [[ ! -f "_job.json" ]]; then
     echo "ERROR: _job.json file not found"
@@ -145,4 +153,4 @@ fi
 worker_script="${root_dir}/src/ingest_cog.py"
 
 echo "Executing: python ${worker_script} ${args[@]}"
-conda run -n ingest --live-stream python "${worker_script}" "${args[@]}"
+"${ENV_PYTHON}" "${worker_script}" "${args[@]}"

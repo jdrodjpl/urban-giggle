@@ -9,13 +9,14 @@ root_dir=$(dirname $(dirname "${basedir}"))
 
 echo "Running Frozon ISS Zarr ingest worker..."
 
-if [[ -f /opt/conda/etc/profile.d/conda.sh ]]; then
-    source /opt/conda/etc/profile.d/conda.sh
+echo "=== Runtime conda discovery ==="
+echo "ls /opt/conda/envs/:"; ls -la /opt/conda/envs/ 2>&1 || true
+echo "================================"
+if [[ ! -x /opt/conda/envs/ingest/bin/python ]]; then
+    echo "FATAL: /opt/conda/envs/ingest/bin/python not found." >&2
+    exit 1
 fi
-echo "=== Runtime conda state ==="
-conda info --envs || true
-echo "==========================="
-conda activate ingest
+ENV_PYTHON=/opt/conda/envs/ingest/bin/python
 
 if [[ ! -f "_job.json" ]]; then
     echo "ERROR: _job.json file not found"
@@ -106,4 +107,4 @@ args+=(--output output)
 
 worker_script="${root_dir}/src/ingest_zarr.py"
 echo "Executing: python ${worker_script} ${args[@]}"
-conda run -n ingest --live-stream python "${worker_script}" "${args[@]}"
+"${ENV_PYTHON}" "${worker_script}" "${args[@]}"
