@@ -243,6 +243,18 @@ async def main() -> None:
             source = make_source(args)
             logger.info(f"Resolving inputs from {source.description}")
             input_refs = source.list_inputs()
+            # Apply the user's --filter glob to whatever the source returns.
+            # CMRTiffSource doesn't filter internally (it returns every .tif
+            # from each granule, which for OPERA RTC means VH, VV, AND mask),
+            # so this is where we drop the polarizations the user doesn't want.
+            if args.filter_pattern:
+                from fnmatch import fnmatch
+                before = len(input_refs)
+                input_refs = [r for r in input_refs if fnmatch(r.name, args.filter_pattern)]
+                logger.info(
+                    f"Filtered {before} input(s) → {len(input_refs)} matching "
+                    f"{args.filter_pattern!r}"
+                )
             if not input_refs:
                 raise RuntimeError(f"No TIFFs found via {source.description}")
         else:

@@ -128,6 +128,16 @@ async def main() -> None:
             source = make_source(args)
             logger.info(f"Resolving inputs from {source.description}")
             refs = source.list_inputs()
+            # Apply --filter at the orchestrator since the CMR source returns
+            # every .tif per granule (VH, VV, mask for OPERA RTC).
+            if args.filter_pattern:
+                from fnmatch import fnmatch
+                before = len(refs)
+                refs = [r for r in refs if fnmatch(r.name, args.filter_pattern)]
+                logger.info(
+                    f"Filtered {before} input(s) → {len(refs)} matching "
+                    f"{args.filter_pattern!r}"
+                )
             if not refs:
                 raise RuntimeError(f"No TIFFs found via {source.description}")
             # Zarr worker is batch — pass the full URL list in one shot.
