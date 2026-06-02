@@ -9,7 +9,13 @@ root_dir=$(dirname $(dirname "${basedir}"))
 
 echo "Running Frozon ISS Zarr ingest worker..."
 
-source activate ingest
+if [[ -f /opt/conda/etc/profile.d/conda.sh ]]; then
+    source /opt/conda/etc/profile.d/conda.sh
+fi
+echo "=== Runtime conda state ==="
+conda info --envs || true
+echo "==========================="
+conda activate ingest
 
 if [[ ! -f "_job.json" ]]; then
     echo "ERROR: _job.json file not found"

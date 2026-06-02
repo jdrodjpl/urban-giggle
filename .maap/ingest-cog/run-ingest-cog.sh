@@ -8,7 +8,15 @@ root_dir=$(dirname $(dirname "${basedir}"))
 
 echo "Running Frozon ISS COG ingest worker..."
 
-source activate ingest
+# Initialize conda for this shell, then activate. `source activate` is the
+# deprecated form and was failing with "Could not find conda environment".
+if [[ -f /opt/conda/etc/profile.d/conda.sh ]]; then
+    source /opt/conda/etc/profile.d/conda.sh
+fi
+echo "=== Runtime conda state ==="
+conda info --envs || true
+echo "==========================="
+conda activate ingest
 
 if [[ ! -f "_job.json" ]]; then
     echo "ERROR: _job.json file not found"
