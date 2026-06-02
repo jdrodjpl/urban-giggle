@@ -15,7 +15,7 @@ on:
         description: "Max granules to fetch (leave blank for no limit)"
         default: ""
       retain_days:
-        description: "Rolling-window size (days of data to keep)"
+        description: "Keep the N most recent calendar days of Zarr slices (count-based, not a window)"
         default: "7"
       collection_id:
         description: "STAC collection ID (also names the Zarr)"

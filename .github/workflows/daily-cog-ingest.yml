@@ -14,7 +14,7 @@ on:
         description: "Max granules to fetch (leave blank for no limit)"
         default: ""
       retain_days:
-        description: "Delete COGs older than (newest_date - N days)"
+        description: "Keep the N most recent calendar days of COGs (count-based, not a window)"
         default: "7"
       collection_id:
         description: "STAC collection ID"
