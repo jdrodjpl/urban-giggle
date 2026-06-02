@@ -17,6 +17,9 @@ fi
 
 input_s3=$(jq -r '.params.input_s3 // empty' _job.json)
 input_https=$(jq -r '.params.input_https // empty' _job.json)
+input_s3_urls=$(jq -r '.params.input_s3_urls // empty' _job.json)
+input_https_urls=$(jq -r '.params.input_https_urls // empty' _job.json)
+mosaic_date=$(jq -r '.params.mosaic_date // empty' _job.json)
 earthdata_token_secret_name=$(jq -r '.params.earthdata_token_secret_name // empty' _job.json)
 collection_id=$(jq -r '.params.collection_id // empty' _job.json)
 s3_bucket=$(jq -r '.params.s3_bucket // empty' _job.json)
@@ -36,7 +39,8 @@ scp_key_secret_name=$(jq -r '.params.scp_key_secret_name // empty' _job.json)
 
 # MAAP fills unset positional inputs with the YAML default "none";
 # normalize so the Python entry point doesn't see --flag none.
-for var in input_s3 input_https earthdata_token_secret_name role_arn s3_prefix \
+for var in input_s3 input_https input_s3_urls input_https_urls mosaic_date \
+           earthdata_token_secret_name role_arn s3_prefix \
            scp_host scp_user scp_remote_dir scp_key_secret_name; do
     val_lc=$(echo "${!var}" | tr '[:upper:]' '[:lower:]')
     if [[ "${val_lc}" == "none" || "${val_lc}" == "null" ]]; then
@@ -64,7 +68,22 @@ echo "max_memory:    ${max_memory}"
 echo "========================="
 
 args=()
-if [[ -n "${input_s3}" ]]; then
+if [[ -n "${input_https_urls}" ]]; then
+    # Daily-mosaic mode (HTTPS+EDL): JSON list of URLs.
+    args+=(--input-https-urls "${input_https_urls}")
+    if [[ -n "${earthdata_token_secret_name}" ]]; then
+        args+=(--earthdata-token-secret-name "${earthdata_token_secret_name}")
+    fi
+    if [[ -n "${mosaic_date}" ]]; then
+        args+=(--mosaic-date "${mosaic_date}")
+    fi
+elif [[ -n "${input_s3_urls}" ]]; then
+    # Daily-mosaic mode (S3): JSON list of URLs.
+    args+=(--input-s3-urls "${input_s3_urls}")
+    if [[ -n "${mosaic_date}" ]]; then
+        args+=(--mosaic-date "${mosaic_date}")
+    fi
+elif [[ -n "${input_s3}" ]]; then
     args+=(--input-s3 "${input_s3}")
 elif [[ -n "${input_https}" ]]; then
     args+=(--input-https "${input_https}")
@@ -74,7 +93,7 @@ elif [[ -n "${input_https}" ]]; then
 elif [[ -n "${input_tiff}" ]]; then
     args+=(--input-tiff "${input_tiff}")
 else
-    echo "ERROR: no input provided (input_s3, input_https, or staged input/ file)"
+    echo "ERROR: no input provided"
     exit 1
 fi
 

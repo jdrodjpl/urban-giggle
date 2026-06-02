@@ -21,10 +21,13 @@ import os
 import shutil
 import subprocess
 import sys
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import List, Optional, Tuple
 
 import pystac
+import rasterio
+from rasterio.merge import merge as rio_merge
 import rio_stac
 
 from common_utils import AWSUtils
@@ -182,6 +185,59 @@ def stage_input(input_s3: Optional[str], input_tiff: Optional[str],
     raise ValueError("One of --input-s3, --input-https, or --input-tiff is required")
 
 
+def stage_inputs_batch(input_s3_urls: Optional[List[str]],
+                       input_https_urls: Optional[List[str]],
+                       work_dir: Path,
+                       role_arn: Optional[str],
+                       earthdata_token_secret_name: Optional[str] = None) -> List[Path]:
+    """Download a list of S3 or HTTPS+EDL inputs to local disk."""
+    paths: List[Path] = []
+    if input_s3_urls:
+        for url in input_s3_urls:
+            paths.append(stage_input(url, None, None, work_dir, role_arn))
+    elif input_https_urls:
+        from input_sources.cmr_tiff import download_https_edl
+        for url in input_https_urls:
+            paths.append(download_https_edl(url, work_dir, earthdata_token_secret_name))
+    return paths
+
+
+def mosaic_tiffs(tiffs: List[Path], output_path: Path,
+                 nodata: Optional[float] = None) -> Path:
+    """Mosaic a list of GeoTIFFs into one. Overlapping pixels are handled
+    by rasterio.merge's default ('first' — first-wins). For backscatter
+    data first-wins is fine; if we need a mean/max blend later we can
+    add a `--mosaic-method` flag."""
+    if len(tiffs) == 1:
+        # Trivial case — just copy through. mosaic_tiffs is a no-op.
+        shutil.copy2(str(tiffs[0]), str(output_path))
+        return output_path
+
+    logger.info(f"Mosaicking {len(tiffs)} TIFF(s) → {output_path}")
+    srcs = [rasterio.open(str(t)) for t in tiffs]
+    try:
+        merged, transform = rio_merge(srcs, nodata=nodata)
+        profile = srcs[0].profile.copy()
+        profile.update({
+            'height': merged.shape[1],
+            'width': merged.shape[2],
+            'transform': transform,
+            'count': merged.shape[0],
+            'driver': 'GTiff',
+            'compress': 'deflate',
+            'bigtiff': 'IF_SAFER',
+        })
+        if nodata is not None:
+            profile['nodata'] = nodata
+        with rasterio.open(str(output_path), 'w', **profile) as dst:
+            dst.write(merged)
+    finally:
+        for s in srcs:
+            s.close()
+    logger.info(f"Mosaic written: {output_path} ({output_path.stat().st_size / 1e6:.1f} MB)")
+    return output_path
+
+
 def build_stac_item(cog_local_path: Path, collection_id: str) -> pystac.Item:
     """Build a STAC item from the local COG. Asset href is the local path
     for now and will be rewritten to the final S3 URL after upload.
@@ -272,10 +328,19 @@ def main() -> int:
                      help="HTTPS URL of the input TIFF (Earthdata-protected; "
                           "requires --earthdata-token-secret-name)")
     src.add_argument("--input-tiff", help="Local TIFF file path")
+    src.add_argument("--input-s3-urls",
+                     help="JSON list of S3 URLs to mosaic into a single daily COG.")
+    src.add_argument("--input-https-urls",
+                     help="JSON list of Earthdata-protected HTTPS URLs to "
+                          "mosaic into a single daily COG.")
     parser.add_argument("--earthdata-token-secret-name", default=None,
                         help="MAAP secret name holding the EDL bearer token "
                              "(or username\\npassword). Only required for "
-                             "--input-https.")
+                             "--input-https or --input-https-urls.")
+    parser.add_argument("--mosaic-date", default=None,
+                        help="YYYYMMDD used to name the daily mosaic output. "
+                             "Required when --input-s3-urls / --input-https-urls "
+                             "is given.")
 
     parser.add_argument("--collection-id", required=True)
     parser.add_argument("--s3-bucket", required=True, help="Output bucket for the COG")
@@ -315,11 +380,33 @@ def main() -> int:
     stac_dir.mkdir(parents=True, exist_ok=True)
 
     try:
-        input_path = stage_input(
-            args.input_s3, args.input_tiff, args.input_https,
-            work_dir, args.role_arn,
-            earthdata_token_secret_name=args.earthdata_token_secret_name,
-        )
+        if args.input_s3_urls or args.input_https_urls:
+            # Daily-mosaic mode: download all inputs, merge, then COG-convert.
+            if not args.mosaic_date:
+                raise ValueError("--mosaic-date is required when using "
+                                 "--input-s3-urls or --input-https-urls")
+            s3_urls = json.loads(args.input_s3_urls) if args.input_s3_urls else None
+            https_urls = json.loads(args.input_https_urls) if args.input_https_urls else None
+            staged_dir = work_dir / "staged"
+            staged_dir.mkdir(parents=True, exist_ok=True)
+            staged = stage_inputs_batch(
+                s3_urls, https_urls, staged_dir, args.role_arn,
+                earthdata_token_secret_name=args.earthdata_token_secret_name,
+            )
+            if not staged:
+                raise RuntimeError("Batch staging produced 0 input files")
+
+            mosaic_name = f"{args.collection_id}_{args.mosaic_date}_daily.tif"
+            mosaic_path = work_dir / "mosaic" / mosaic_name
+            mosaic_path.parent.mkdir(parents=True, exist_ok=True)
+            mosaic_tiffs(staged, mosaic_path)
+            input_path = mosaic_path
+        else:
+            input_path = stage_input(
+                args.input_s3, args.input_tiff, args.input_https,
+                work_dir, args.role_arn,
+                earthdata_token_secret_name=args.earthdata_token_secret_name,
+            )
         cog_path = cog_dir / f"{input_path.stem}_COG.tif"
 
         ok, msg = convert_to_cog_lowmem(
@@ -336,9 +423,13 @@ def main() -> int:
         if not ok:
             return 2
 
-        # Build STAC item first so we can derive the dated S3 key from
-        # item.datetime, then upload, then finalize the asset href.
+        # Build STAC item. For daily mosaics, override the datetime to
+        # the mosaic date at 00:00 UTC so the dated S3 key reflects the
+        # acquisition date rather than rio_stac's "now" fallback.
         item = build_stac_item(cog_path, args.collection_id)
+        if args.mosaic_date:
+            mosaic_dt = datetime.strptime(args.mosaic_date, "%Y%m%d").replace(tzinfo=timezone.utc)
+            item.datetime = mosaic_dt
         s3_key = build_dated_s3_key(
             args.s3_prefix, args.collection_id, item.datetime, cog_path.name
         )

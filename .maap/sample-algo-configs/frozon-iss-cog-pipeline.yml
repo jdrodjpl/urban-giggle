@@ -132,6 +132,10 @@ inputs:
     description: MAAP secret name holding the EDL bearer token (or username\npassword)
     name: earthdata_token_secret_name
     required: false
+  - default: ""
+    description: Regex with named group 'start_date' used to extract YYYYMMDD from input filenames so the orchestrator can group inputs into per-date daily mosaics. Empty disables grouping (each input becomes its own COG).
+    name: time_regex
+    required: false
   - default: "0"
     description: If > 0, keep only the N most recent calendar days of COG outputs in S3 after cataloging; delete the rest.
     name: retain_days

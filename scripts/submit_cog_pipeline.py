@@ -36,6 +36,8 @@ DEFAULTS = {
     "RETAIN_DAYS":           "7",
     "FILTER":                "*VH*.tif",
     "TIME_REGEX":            r"_(?P<start_date>\d{8}T\d{6})Z_",
+    # TIME_REGEX is now also used by the orchestrator to group inputs
+    # into per-date daily mosaics (one COG per acquisition date).
     "LIMIT":                 "",
     "TEMPORAL_WINDOW_DAYS":  "14",
 }
@@ -72,6 +74,7 @@ def main() -> int:
         "s3_prefix":                       env("S3_PREFIX"),
         "retain_days":                     env("RETAIN_DAYS"),
         "filter":                          env("FILTER"),
+        "time_regex":                      env("TIME_REGEX"),
     }
     limit = env("LIMIT")
     if limit:

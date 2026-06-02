@@ -35,6 +35,7 @@ post_stac_webhook_token_secret_name=$(jq -r '.params.post_stac_webhook_token_sec
 filter_pattern=$(jq -r '.params.filter // empty' _job.json)
 limit=$(jq -r '.params.limit // empty' _job.json)
 local_download_path=$(jq -r '.params.local_download_path // "output"' _job.json)
+time_regex=$(jq -r '.params.time_regex // empty' _job.json)
 input_source_type=$(jq -r '.params.input_source_type // "s3"' _job.json)
 cmr_short_name=$(jq -r '.params.cmr_short_name // empty' _job.json)
 cmr_version=$(jq -r '.params.cmr_version // empty' _job.json)
@@ -57,7 +58,7 @@ scp_key_secret_name=$(jq -r '.params.scp_key_secret_name // empty' _job.json)
 for var in input_s3 input_s3_prefix role_arn s3_prefix \
            cmss_logger_host mmgis_host titiler_token_secret_name \
            post_stac_webhook_url post_stac_webhook_token_secret_name \
-           filter_pattern limit \
+           filter_pattern limit time_regex \
            cmr_short_name cmr_version cmr_temporal_start cmr_temporal_end \
            cmr_bbox cmr_granule_ids earthdata_token_secret_name \
            scp_host scp_user scp_remote_dir scp_key_secret_name; do
@@ -145,6 +146,9 @@ if [[ -n "${filter_pattern}" ]]; then
 fi
 if [[ -n "${limit}" ]]; then
     args+=(--limit "${limit}")
+fi
+if [[ -n "${time_regex}" ]]; then
+    args+=(--time-regex "${time_regex}")
 fi
 args+=(--retain-days "${retain_days}")
 if [[ -n "${local_download_path}" && "${local_download_path}" != "output" ]]; then

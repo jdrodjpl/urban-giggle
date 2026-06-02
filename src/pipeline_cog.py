@@ -9,12 +9,14 @@ Modeled on czdt-iss-ingest-job/src/pipeline_generic.py.
 
 import argparse
 import asyncio
+import json
 import logging
 import os
 import re
 import sys
+from collections import defaultdict
 from datetime import date, timedelta
-from typing import Optional
+from typing import Dict, List, Optional
 
 import backoff
 from maap.dps.dps_job import DPSJob
@@ -49,17 +51,48 @@ async def wait_for_completion(job: DPSJob) -> DPSJob:
     return job
 
 
-async def submit_cog_job(args: argparse.Namespace, maap, input_ref: InputRef) -> DPSJob:
-    """Submit a single ingest_cog DPS job for one input."""
-    base = os.path.splitext(input_ref.name)[0]
-    identifier_suffix = base[-10:] if len(base) >= 10 else base
+def group_refs_by_date(input_refs: List[InputRef],
+                       time_regex: Optional[str]) -> Dict[str, List[InputRef]]:
+    """Group input refs by acquisition date (YYYYMMDD).
 
-    msg = f"Submitting COG conversion job for {input_ref.url}"
+    Uses the same `time_regex` the Zarr pipeline uses to extract a
+    datetime from each filename, then keys on the date portion. Refs
+    whose filename doesn't match fall into a single 'unknown' bucket
+    that gets logged loudly and skipped.
+    """
+    if not time_regex:
+        # No grouping requested — treat every input as its own date bucket
+        # (preserves the legacy per-granule behavior).
+        return {ref.name: [ref] for ref in input_refs}
+
+    pattern = re.compile(time_regex)
+    groups: Dict[str, List[InputRef]] = defaultdict(list)
+    skipped: List[str] = []
+    for ref in input_refs:
+        m = pattern.search(ref.name)
+        if not m:
+            skipped.append(ref.name)
+            continue
+        ts = m.group('start_date') if 'start_date' in (m.groupdict() or {}) else m.group(1)
+        date_key = ts[:8]   # YYYYMMDD
+        groups[date_key].append(ref)
+    if skipped:
+        logger.warning(f"group_refs_by_date: {len(skipped)} ref(s) didn't match "
+                       f"time_regex; skipped: {skipped[:3]}{'...' if len(skipped) > 3 else ''}")
+    return dict(groups)
+
+
+async def submit_daily_mosaic_job(args: argparse.Namespace, maap,
+                                  date_key: str, refs: List[InputRef]) -> DPSJob:
+    """Submit one ingest_cog DPS job that mosaics all granules from `date_key`
+    into a single daily COG."""
+    msg = (f"Submitting daily-mosaic COG job for {date_key} "
+           f"({len(refs)} granule(s))")
     logger.info(msg)
     LoggingUtils.cmss_logger(msg, args.cmss_logger_host)
 
     job_params = {
-        "identifier": f"Frozon-COG-Pipeline_{identifier_suffix}",
+        "identifier": f"Frozon-COG-Daily_{date_key}",
         "algo_id": ALGO_ID,
         "version": ALGO_VERSION,
         "queue": args.job_queue,
@@ -72,6 +105,7 @@ async def submit_cog_job(args: argparse.Namespace, maap, input_ref: InputRef) ->
         "resampling": args.resampling,
         "overview_resampling": args.overview_resampling,
         "overwrite": "true" if args.overwrite else "false",
+        "mosaic_date": date_key,
     }
     if args.role_arn:
         job_params["role_arn"] = args.role_arn
@@ -84,30 +118,33 @@ async def submit_cog_job(args: argparse.Namespace, maap, input_ref: InputRef) ->
             job_params["scp_remote_dir"] = args.scp_remote_dir
         if args.scp_key_secret_name:
             job_params["scp_key_secret_name"] = args.scp_key_secret_name
-    if input_ref.auth_kind == "s3":
-        job_params["input_s3"] = input_ref.url
-    elif input_ref.auth_kind == "https_edl":
-        job_params["input_https"] = input_ref.url
+
+    # All refs in a daily bucket share the same auth_kind in practice
+    # (they all came from the same CMR query). Use the first ref to decide.
+    auth_kind = refs[0].auth_kind
+    urls = [r.url for r in refs]
+    if auth_kind == "s3":
+        # Pass S3 URLs as a JSON list; worker handles either one or many.
+        job_params["input_s3_urls"] = json.dumps(urls)
+    elif auth_kind == "https_edl":
+        job_params["input_https_urls"] = json.dumps(urls)
         if args.earthdata_token_secret_name:
             job_params["earthdata_token_secret_name"] = args.earthdata_token_secret_name
     else:
-        raise RuntimeError(f"Unknown auth_kind {input_ref.auth_kind!r} for {input_ref.url}")
+        raise RuntimeError(f"Unknown auth_kind {auth_kind!r}")
 
-    # MAAP serializes None as the string "None" in _job.json which breaks the
-    # worker's argparse. Drop None values defensively in case anything else
-    # leaks through.
     job_params = {k: v for k, v in job_params.items() if v is not None}
 
-    logger.debug(f"COG job parameters: {job_params}")
+    logger.debug(f"Daily-mosaic job parameters: {job_params}")
     job = maap.submitJob(**job_params)
 
     if not job.id:
         err = MaapUtils.job_error_message(job)
-        raise RuntimeError(f"Failed to submit COG job: {err}")
+        raise RuntimeError(f"Failed to submit daily-mosaic job: {err}")
 
-    logger.info(f"COG job submitted: {job.id}")
+    logger.info(f"Daily-mosaic job submitted ({date_key}): {job.id}")
     await wait_for_completion(job)
-    logger.info(f"COG job completed: {job.id}")
+    logger.info(f"Daily-mosaic job completed ({date_key}): {job.id}")
     return job
 
 
@@ -214,10 +251,20 @@ async def main() -> None:
                 "directly, not the orchestrator"
             )
 
-        logger.info(f"Submitting {len(input_refs)} COG job(s) to queue {args.job_queue}")
+        date_groups = group_refs_by_date(input_refs, args.time_regex)
+        logger.info(
+            f"Grouped {len(input_refs)} input(s) into {len(date_groups)} "
+            f"daily mosaic(s): {sorted(date_groups.keys())}"
+        )
+        if not date_groups:
+            raise RuntimeError("No inputs could be grouped by date")
+
+        logger.info(f"Submitting {len(date_groups)} daily-mosaic job(s) "
+                    f"to queue {args.job_queue}")
 
         cog_jobs = await asyncio.gather(*[
-            submit_cog_job(args, maap, ref) for ref in input_refs
+            submit_daily_mosaic_job(args, maap, date_key, refs)
+            for date_key, refs in sorted(date_groups.items())
         ])
 
         catalog_products(args, maap, cog_jobs, primary_asset_keys=("asset",))

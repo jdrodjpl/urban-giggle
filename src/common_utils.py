@@ -346,6 +346,13 @@ class ConfigUtils:
         parser.add_argument("--local-download-path", default="output",
                             help="Local working directory for downloads/outputs")
 
+        parser.add_argument("--time-regex", default=None,
+                            help="Regex with named group 'start_date' (or first "
+                                 "capture) used to extract YYYYMMDD from input "
+                                 "filenames so the orchestrator can group inputs "
+                                 "into per-date mosaics. e.g. "
+                                 r"_(?P<start_date>\d{8}T\d{6})Z_")
+
         parser.add_argument("--retain-days", type=int, default=0,
                             help="If > 0, keep only the N most recent calendar "
                                  "days of COG outputs in S3; delete the rest. "
