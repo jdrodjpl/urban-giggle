@@ -115,13 +115,19 @@ fi
 
 worker_script="${root_dir}/src/ingest_cog.py"
 
-# rasterio's pip wheel ships PROJ binaries but not proj.db; point it at
-# pyproj's data dir so CRS lookups (e.g. rio_stac importing EPSG:4326)
-# don't blow up on 'Cannot find proj.db'.
-export PROJ_DATA=$(python3 -c "import pyproj; print(pyproj.datadir.get_data_dir())" 2>/dev/null || echo "")
-if [[ -n "${PROJ_DATA}" ]]; then
-    echo "PROJ_DATA=${PROJ_DATA}"
-fi
+# Find a proj.db rasterio can read. Prefer the conda base image's
+# system-wide PROJ (newest, well-maintained) over pyproj's bundled one
+# (sometimes ships an older proj.db that fails rasterio's version check).
+unset PROJ_DATA PROJ_LIB
+for candidate in /opt/conda/share/proj /usr/share/proj \
+                 "$(python3 -c 'import pyproj; print(pyproj.datadir.get_data_dir())' 2>/dev/null)"; do
+    if [[ -n "${candidate}" && -f "${candidate}/proj.db" ]]; then
+        export PROJ_DATA="${candidate}"
+        export PROJ_LIB="${candidate}"
+        echo "PROJ_DATA=${PROJ_DATA}"
+        break
+    fi
+done
 
 echo "Executing: python3 ${worker_script} ${args[@]}"
 python3 "${worker_script}" "${args[@]}"

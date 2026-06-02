@@ -98,12 +98,16 @@ args+=(--output output)
 
 worker_script="${root_dir}/src/ingest_zarr.py"
 
-# rasterio's pip wheel ships PROJ binaries but not proj.db; point it at
-# pyproj's data dir so CRS lookups don't fail on 'Cannot find proj.db'.
-export PROJ_DATA=$(python3 -c "import pyproj; print(pyproj.datadir.get_data_dir())" 2>/dev/null || echo "")
-if [[ -n "${PROJ_DATA}" ]]; then
-    echo "PROJ_DATA=${PROJ_DATA}"
-fi
+unset PROJ_DATA PROJ_LIB
+for candidate in /opt/conda/share/proj /usr/share/proj \
+                 "$(python3 -c 'import pyproj; print(pyproj.datadir.get_data_dir())' 2>/dev/null)"; do
+    if [[ -n "${candidate}" && -f "${candidate}/proj.db" ]]; then
+        export PROJ_DATA="${candidate}"
+        export PROJ_LIB="${candidate}"
+        echo "PROJ_DATA=${PROJ_DATA}"
+        break
+    fi
+done
 
 echo "=== Runtime python state ==="
 echo "PATH:   ${PATH}"
