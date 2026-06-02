@@ -63,8 +63,10 @@ def register_and_wait(maap, yml_path: str, timeout_s: int = 1800) -> bool:
     print(f"  log: {job_log_url}")
 
     start = time.time()
+    notified_queued = False
     while True:
-        if time.time() - start > timeout_s:
+        elapsed = int(time.time() - start)
+        if elapsed > timeout_s:
             print(f"  ✗ Timed out after {timeout_s}s waiting for build", file=sys.stderr)
             return False
 
@@ -73,21 +75,38 @@ def register_and_wait(maap, yml_path: str, timeout_s: int = 1800) -> bool:
         except Exception as e:
             log = ""
             print(f"  ...log fetch error ({e}); retrying", flush=True)
+            time.sleep(POLL_INTERVAL_S)
+            continue
 
-        if log:
-            tail = log[-4000:]
-            if SUCCESS_MARKER in log:
-                print(f"  ✓ Build complete (took {int(time.time() - start)}s)",
-                      flush=True)
-                return True
-            if any(m in tail for m in FAILURE_MARKERS):
-                print(f"  ✗ Build failed. Last 20 lines:", file=sys.stderr)
-                for line in log.splitlines()[-20:]:
-                    print(f"    {line}", file=sys.stderr)
-                return False
+        # GitLab returns an HTML page when the job hasn't started yet (or
+        # when raw-log auth is gated). Detect and back off quietly.
+        is_html = log.lstrip().startswith("<!DOCTYPE") or "<html" in log[:500].lower()
+        if is_html or not log.strip():
+            if not notified_queued:
+                print(f"  ...build queued, no log yet (will keep polling)", flush=True)
+                notified_queued = True
+            elif elapsed % 120 < POLL_INTERVAL_S:
+                print(f"  ...still queued ({elapsed}s elapsed)", flush=True)
+            time.sleep(POLL_INTERVAL_S)
+            continue
+
+        # Once we have real log content, the build has at least started.
+        if notified_queued:
+            print(f"  ...build started", flush=True)
+            notified_queued = False
+
+        tail = log[-4000:]
+        if SUCCESS_MARKER in log:
+            print(f"  ✓ Build complete (took {elapsed}s)", flush=True)
+            return True
+        if any(m in tail for m in FAILURE_MARKERS):
+            print(f"  ✗ Build failed. Last 20 lines:", file=sys.stderr)
+            for line in log.splitlines()[-20:]:
+                print(f"    {line}", file=sys.stderr)
+            return False
 
         # Print a brief tail so progress is visible.
-        last_line = (log.strip().splitlines() or ["(empty)"])[-1] if log.strip() else "(no log yet)"
+        last_line = log.strip().splitlines()[-1] if log.strip() else "(empty)"
         print(f"  ...{last_line[:100]}", flush=True)
         time.sleep(POLL_INTERVAL_S)
 
