@@ -8,9 +8,7 @@ echo "Building Frozon ISS Zarr pipeline orchestrator environment..."
 
 # jq is used by run-*.sh to read _job.json. Apt-install at build time so
 # it's baked into the image; the build runs as root so no sudo needed.
-if ! command -v jq >/dev/null 2>&1; then
-    apt-get update && apt-get install -y --no-install-recommends jq && rm -rf /var/lib/apt/lists/*
-fi
+apt-get update && apt-get install -y --no-install-recommends jq && rm -rf /var/lib/apt/lists/*
 
 echo "PYTHON: $(which python3) ($(python3 --version 2>&1))"
 echo "JQ:     $(which jq) ($(jq --version))"
