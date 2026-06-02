@@ -13,52 +13,21 @@ if [[ ! -f "_job.json" ]]; then
     exit 1
 fi
 
-input_s3_prefix=$(jq -r '.params.input_s3_prefix // empty' _job.json)
-collection_id=$(jq -r '.params.collection_id // empty' _job.json)
-s3_bucket=$(jq -r '.params.s3_bucket // empty' _job.json)
-s3_prefix=$(jq -r '.params.s3_prefix // ""' _job.json)
-role_arn=$(jq -r '.params.role_arn // empty' _job.json)
-cmss_logger_host=$(jq -r '.params.cmss_logger_host // empty' _job.json)
-mmgis_host=$(jq -r '.params.mmgis_host // empty' _job.json)
-titiler_token_secret_name=$(jq -r '.params.titiler_token_secret_name // empty' _job.json)
-maap_host=$(jq -r '.params.maap_host // "api.maap-project.org"' _job.json)
-time_regex=$(jq -r '.params.time_regex // empty' _job.json)
-chunk_size=$(jq -r '.params.chunk_size // "1024"' _job.json)
-filter_pattern=$(jq -r '.params.filter // empty' _job.json)
-exclude_pattern=$(jq -r '.params.exclude // empty' _job.json)
-limit=$(jq -r '.params.limit // empty' _job.json)
-allow_bounds_expansion=$(jq -r '.params.allow_bounds_expansion // "true"' _job.json)
-upsert=$(jq -r '.params.upsert // "true"' _job.json)
-post_stac_webhook_url=$(jq -r '.params.post_stac_webhook_url // empty' _job.json)
-post_stac_webhook_token_secret_name=$(jq -r '.params.post_stac_webhook_token_secret_name // empty' _job.json)
-input_source_type=$(jq -r '.params.input_source_type // "s3"' _job.json)
-cmr_short_name=$(jq -r '.params.cmr_short_name // empty' _job.json)
-cmr_version=$(jq -r '.params.cmr_version // empty' _job.json)
-cmr_temporal_start=$(jq -r '.params.cmr_temporal_start // empty' _job.json)
-cmr_temporal_end=$(jq -r '.params.cmr_temporal_end // empty' _job.json)
-cmr_bbox=$(jq -r '.params.cmr_bbox // empty' _job.json)
-cmr_granule_ids=$(jq -r '.params.cmr_granule_ids // empty' _job.json)
-cmr_prefer_https=$(jq -r '.params.cmr_prefer_https // "true"' _job.json)
-earthdata_token_secret_name=$(jq -r '.params.earthdata_token_secret_name // empty' _job.json)
-retain_days=$(jq -r '.params.retain_days // "0"' _job.json)
+# Load all _job.json params as shell vars via the python helper
+# (replaces jq, which wasn't reliably installed on MAAP's CI).
+eval "$(python3 "${root_dir}/.maap/_lib/load_job_params.py" _job.json)"
 
-for var in input_s3_prefix role_arn cmss_logger_host mmgis_host \
-           titiler_token_secret_name time_regex filter_pattern \
-           exclude_pattern limit post_stac_webhook_url \
-           post_stac_webhook_token_secret_name \
-           cmr_short_name cmr_version cmr_temporal_start cmr_temporal_end \
-           cmr_bbox cmr_granule_ids earthdata_token_secret_name; do
-    val_lc=$(echo "${!var}" | tr '[:upper:]' '[:lower:]')
-    if [[ "${val_lc}" == "none" || "${val_lc}" == "null" ]]; then
-        eval "${var}=\"\""
-    fi
-done
+: "${s3_prefix:=}"
+: "${maap_host:=api.maap-project.org}"
+: "${chunk_size:=1024}"
+: "${allow_bounds_expansion:=true}"
+: "${upsert:=true}"
+: "${input_source_type:=s3}"
+: "${cmr_prefer_https:=true}"
+: "${retain_days:=0}"
 
-default_queue=$(jq -r '.job_info.job_queue // empty' _job.json)
-job_queue=$(jq -r '.params.job_queue // empty' _job.json)
-if [[ -z "${job_queue}" ]]; then
-    job_queue="${default_queue}"
-fi
+default_queue=$(python3 -c "import json; d=json.load(open('_job.json')); print(d.get('job_info',{}).get('job_queue') or '')")
+: "${job_queue:=${default_queue}}"
 
 echo "=== Parsed parameters ==="
 echo "input_s3_prefix:        ${input_s3_prefix}"

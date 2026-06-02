@@ -13,66 +13,31 @@ if [[ ! -f "_job.json" ]]; then
     exit 1
 fi
 
-input_s3=$(jq -r '.params.input_s3 // empty' _job.json)
-input_s3_prefix=$(jq -r '.params.input_s3_prefix // empty' _job.json)
-collection_id=$(jq -r '.params.collection_id // empty' _job.json)
-s3_bucket=$(jq -r '.params.s3_bucket // empty' _job.json)
-s3_prefix=$(jq -r '.params.s3_prefix // ""' _job.json)
-role_arn=$(jq -r '.params.role_arn // empty' _job.json)
-cmss_logger_host=$(jq -r '.params.cmss_logger_host // empty' _job.json)
-mmgis_host=$(jq -r '.params.mmgis_host // empty' _job.json)
-titiler_token_secret_name=$(jq -r '.params.titiler_token_secret_name // empty' _job.json)
-maap_host=$(jq -r '.params.maap_host // "api.maap-project.org"' _job.json)
-compress=$(jq -r '.params.compress // "DEFLATE"' _job.json)
-blocksize=$(jq -r '.params.blocksize // "512"' _job.json)
-max_memory=$(jq -r '.params.max_memory // "512"' _job.json)
-resampling=$(jq -r '.params.resampling // "nearest"' _job.json)
-overview_resampling=$(jq -r '.params.overview_resampling // "average"' _job.json)
-overwrite=$(jq -r '.params.overwrite // "false"' _job.json)
-upsert=$(jq -r '.params.upsert // "true"' _job.json)
-post_stac_webhook_url=$(jq -r '.params.post_stac_webhook_url // empty' _job.json)
-post_stac_webhook_token_secret_name=$(jq -r '.params.post_stac_webhook_token_secret_name // empty' _job.json)
-filter_pattern=$(jq -r '.params.filter // empty' _job.json)
-limit=$(jq -r '.params.limit // empty' _job.json)
-local_download_path=$(jq -r '.params.local_download_path // "output"' _job.json)
-time_regex=$(jq -r '.params.time_regex // empty' _job.json)
-input_source_type=$(jq -r '.params.input_source_type // "s3"' _job.json)
-cmr_short_name=$(jq -r '.params.cmr_short_name // empty' _job.json)
-cmr_version=$(jq -r '.params.cmr_version // empty' _job.json)
-cmr_temporal_start=$(jq -r '.params.cmr_temporal_start // empty' _job.json)
-cmr_temporal_end=$(jq -r '.params.cmr_temporal_end // empty' _job.json)
-cmr_bbox=$(jq -r '.params.cmr_bbox // empty' _job.json)
-cmr_granule_ids=$(jq -r '.params.cmr_granule_ids // empty' _job.json)
-cmr_prefer_https=$(jq -r '.params.cmr_prefer_https // "true"' _job.json)
-earthdata_token_secret_name=$(jq -r '.params.earthdata_token_secret_name // empty' _job.json)
-retain_days=$(jq -r '.params.retain_days // "0"' _job.json)
-scp_host=$(jq -r '.params.scp_host // empty' _job.json)
-scp_port=$(jq -r '.params.scp_port // "22"' _job.json)
-scp_user=$(jq -r '.params.scp_user // empty' _job.json)
-scp_remote_dir=$(jq -r '.params.scp_remote_dir // empty' _job.json)
-scp_key_secret_name=$(jq -r '.params.scp_key_secret_name // empty' _job.json)
+# Load all _job.json params as shell vars via the python helper.
+# We use python instead of jq because jq is a system binary that
+# wasn't reliably installed on MAAP's CI; python is always there.
+# The helper also normalizes "none"/"null" → "" so the Python entry
+# point doesn't see a literal --flag none.
+eval "$(python3 "${root_dir}/.maap/_lib/load_job_params.py" _job.json)"
 
-# MAAP fills unset positional inputs with the YAML's `default:` literal,
-# which for optional fields is the string "none". Normalize that to empty
-# so the Python entry point doesn't see a literal --flag none.
-for var in input_s3 input_s3_prefix role_arn s3_prefix \
-           cmss_logger_host mmgis_host titiler_token_secret_name \
-           post_stac_webhook_url post_stac_webhook_token_secret_name \
-           filter_pattern limit time_regex \
-           cmr_short_name cmr_version cmr_temporal_start cmr_temporal_end \
-           cmr_bbox cmr_granule_ids earthdata_token_secret_name \
-           scp_host scp_user scp_remote_dir scp_key_secret_name; do
-    val_lc=$(echo "${!var}" | tr '[:upper:]' '[:lower:]')
-    if [[ "${val_lc}" == "none" || "${val_lc}" == "null" ]]; then
-        eval "${var}=\"\""
-    fi
-done
+# Apply defaults for unset fields.
+: "${s3_prefix:=}"
+: "${maap_host:=api.maap-project.org}"
+: "${compress:=DEFLATE}"
+: "${blocksize:=512}"
+: "${max_memory:=512}"
+: "${resampling:=nearest}"
+: "${overview_resampling:=average}"
+: "${overwrite:=false}"
+: "${upsert:=true}"
+: "${local_download_path:=output}"
+: "${input_source_type:=s3}"
+: "${cmr_prefer_https:=true}"
+: "${retain_days:=0}"
+: "${scp_port:=22}"
 
-default_queue=$(jq -r '.job_info.job_queue // empty' _job.json)
-job_queue=$(jq -r '.params.job_queue // empty' _job.json)
-if [[ -z "${job_queue}" ]]; then
-    job_queue="${default_queue}"
-fi
+default_queue=$(python3 -c "import json; d=json.load(open('_job.json')); print(d.get('job_info',{}).get('job_queue') or '')")
+: "${job_queue:=${default_queue}}"
 
 echo "=== Parsed parameters ==="
 echo "input_s3:        ${input_s3}"
