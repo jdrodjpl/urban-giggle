@@ -10,7 +10,11 @@ basedir=$( cd "$(dirname "$0")" ; pwd -P )
 
 echo "Building Frozon ISS Zarr ingest worker environment..."
 pushd "${basedir}"
-conda env update -n ingest --file environment.yml
+if conda env list | awk '{print $1}' | grep -qx ingest; then
+    conda env update -n ingest --file environment.yml
+else
+    conda env create -n ingest --file environment.yml
+fi
 popd
 
 # Smoke import — fail the build, not the runtime.
