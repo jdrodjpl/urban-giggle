@@ -33,7 +33,7 @@ logger = logging.getLogger(__name__)
 logger.setLevel(logging.DEBUG)
 
 ALGO_ID = "frozon-iss-ingest-cog"
-ALGO_VERSION = "main-v2"
+ALGO_VERSION = "main"
 
 
 def parse_arguments() -> argparse.Namespace:

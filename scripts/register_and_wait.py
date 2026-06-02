@@ -26,19 +26,48 @@ Exits non-zero if any build fails. Use with `&&` to chain a submit:
 
 import argparse
 import json
+import re
 import sys
 import time
 import urllib.request
 from pathlib import Path
 
 POLL_INTERVAL_S = 30
-SUCCESS_MARKER = "Build complete!"
-FAILURE_MARKERS = ("did not complete successfully", "ERROR: Job failed")
+TERMINAL_STATES = {"success", "failed", "canceled", "skipped", "manual"}
+
+
+def _pipeline_status(pipeline_web_url: str) -> str:
+    """Scrape the pipeline page HTML for its current status.
+
+    GitLab's pipeline page is publicly accessible (no auth gate, unlike
+    the raw job log) and includes the pipeline status in the
+    `data-qa-selector` and badge classes. We grep for `ci_status_badge`
+    style markers; if multiple matches, pick the most-recent one. Returns
+    one of: pending, running, success, failed, canceled, skipped, manual,
+    or 'unknown'.
+    """
+    try:
+        html = urllib.request.urlopen(pipeline_web_url, timeout=30).read().decode()
+    except Exception as e:
+        return f"fetch-error:{e}"
+
+    # Look for the pipeline-level status. GitLab embeds it in several places;
+    # the most reliable I've found is `data-status="<state>"` on the status
+    # badge link near the top of the pipeline page.
+    candidates = re.findall(r'data-status="([a-z]+)"', html)
+    for c in candidates:
+        if c in TERMINAL_STATES or c in ("pending", "running", "preparing", "scheduled"):
+            return c
+    # Fallback — look for status icons via title attribute.
+    for state in ("success", "failed", "running", "pending", "canceled", "skipped"):
+        if f'title="{state.capitalize()}"' in html or f'aria-label="Status: {state.capitalize()}"' in html:
+            return state
+    return "unknown"
 
 
 def register_and_wait(maap, yml_path: str, timeout_s: int = 1800) -> bool:
-    """Register the algo at `yml_path` and poll its CI build until it
-    succeeds, fails, or times out. Returns True on success."""
+    """Register the algo at `yml_path` and poll its CI pipeline status
+    until success/failure/timeout. Returns True on success."""
     name = Path(yml_path).name
     print(f"\n=== Registering {name} ===", flush=True)
 
@@ -52,62 +81,46 @@ def register_and_wait(maap, yml_path: str, timeout_s: int = 1800) -> bool:
 
     last_pipeline = parsed.get("message", {}).get("last_pipeline", {})
     pipeline_id = last_pipeline.get("id")
+    pipeline_web_url = last_pipeline.get("web_url")
     sha = (last_pipeline.get("sha") or "")[:8]
     job_log_url = parsed.get("message", {}).get("job_log_url")
 
-    if not job_log_url:
-        print(f"  ✗ No job_log_url in response: {parsed}", file=sys.stderr)
+    if not pipeline_web_url:
+        print(f"  ✗ No last_pipeline.web_url in response: {parsed}", file=sys.stderr)
         return False
 
     print(f"  pipeline {pipeline_id} (registry SHA {sha})")
-    print(f"  log: {job_log_url}")
+    print(f"  page: {pipeline_web_url}")
+    if job_log_url:
+        print(f"  log:  {job_log_url}")
 
     start = time.time()
-    notified_queued = False
+    last_status = None
     while True:
         elapsed = int(time.time() - start)
         if elapsed > timeout_s:
             print(f"  ✗ Timed out after {timeout_s}s waiting for build", file=sys.stderr)
             return False
 
-        try:
-            log = urllib.request.urlopen(job_log_url, timeout=30).read().decode()
-        except Exception as e:
-            log = ""
-            print(f"  ...log fetch error ({e}); retrying", flush=True)
-            time.sleep(POLL_INTERVAL_S)
-            continue
+        status = _pipeline_status(pipeline_web_url)
+        if status != last_status:
+            print(f"  status: {status} (t+{elapsed}s)", flush=True)
+            last_status = status
 
-        # GitLab returns an HTML page when the job hasn't started yet (or
-        # when raw-log auth is gated). Detect and back off quietly.
-        is_html = log.lstrip().startswith("<!DOCTYPE") or "<html" in log[:500].lower()
-        if is_html or not log.strip():
-            if not notified_queued:
-                print(f"  ...build queued, no log yet (will keep polling)", flush=True)
-                notified_queued = True
-            elif elapsed % 120 < POLL_INTERVAL_S:
-                print(f"  ...still queued ({elapsed}s elapsed)", flush=True)
-            time.sleep(POLL_INTERVAL_S)
-            continue
-
-        # Once we have real log content, the build has at least started.
-        if notified_queued:
-            print(f"  ...build started", flush=True)
-            notified_queued = False
-
-        tail = log[-4000:]
-        if SUCCESS_MARKER in log:
+        if status == "success":
             print(f"  ✓ Build complete (took {elapsed}s)", flush=True)
             return True
-        if any(m in tail for m in FAILURE_MARKERS):
-            print(f"  ✗ Build failed. Last 20 lines:", file=sys.stderr)
-            for line in log.splitlines()[-20:]:
-                print(f"    {line}", file=sys.stderr)
+        if status in ("failed", "canceled"):
+            print(f"  ✗ Build {status}. Open the page URL above for details.",
+                  file=sys.stderr)
             return False
+        if status == "skipped":
+            # 'skipped' means MAAP didn't actually rebuild — usually because
+            # nothing it cares about changed. Treat as success since the
+            # existing image is what'll be used.
+            print(f"  ✓ Build skipped (image reused)", flush=True)
+            return True
 
-        # Print a brief tail so progress is visible.
-        last_line = log.strip().splitlines()[-1] if log.strip() else "(empty)"
-        print(f"  ...{last_line[:100]}", flush=True)
         time.sleep(POLL_INTERVAL_S)
 
 
