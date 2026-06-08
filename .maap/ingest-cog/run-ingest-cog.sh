@@ -14,7 +14,7 @@ echo "ls /opt/conda/envs/:"; ls -la /opt/conda/envs/ 2>&1 || echo "  /opt/conda/
 echo "ls /opt/conda/envs/ingest/bin/ (top 5):"
 ls /opt/conda/envs/ingest/bin/ 2>&1 | head -5
 echo "find any 'ingest' env on disk:"
-find / -maxdepth 6 -type d -name ingest 2>/dev/null | head
+{ find / -maxdepth 6 -type d -name ingest 2>/dev/null | head; } || true
 echo "================================"
 
 # Use the env's python directly — bypass conda activate.
