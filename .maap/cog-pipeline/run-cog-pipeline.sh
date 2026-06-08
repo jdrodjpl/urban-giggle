@@ -2,9 +2,33 @@
 # Frozon ISS COG Pipeline — orchestrator runner.
 # Reads job parameters from _job.json and invokes src/pipeline_cog.py.
 set -eo pipefail
-set +u   # explicitly disable nounset — vars not in _job.json read as
-         # empty. Forcing this OFF because some bash environments
-         # inherit -u from the caller and our script uses ${var} freely.
+set +u
+
+# Pre-declare every variable the script reads. The python helper only
+# emits keys actually present in _job.json — anything not present stays
+# unset, and we test those with [[ -n "${var}" ]] which fails under
+# `set -u`. Even with `set +u`, some shells inherit nounset oddly, so
+# we declare defaults explicitly.
+input_s3="" input_s3_prefix="" input_s3_urls="" input_https="" input_https_urls=""
+mosaic_date=""
+collection_id="" s3_bucket="" s3_prefix=""
+role_arn=""
+cmss_logger_host="" mmgis_host="" titiler_token_secret_name=""
+maap_host="api.maap-project.org"
+compress="DEFLATE" blocksize="512" max_memory="512"
+resampling="nearest" overview_resampling="average"
+overwrite="false" upsert="true"
+post_stac_webhook_url="" post_stac_webhook_token_secret_name=""
+filter_pattern="" limit="" local_download_path="output"
+time_regex=""
+input_source_type="s3"
+cmr_short_name="" cmr_version=""
+cmr_temporal_start="" cmr_temporal_end="" cmr_bbox="" cmr_granule_ids=""
+cmr_prefer_https="true"
+earthdata_token_secret_name=""
+retain_days="0"
+scp_host="" scp_port="22" scp_user="" scp_remote_dir="" scp_key_secret_name=""
+job_queue=""
 
 basedir=$( cd "$(dirname "$0")" ; pwd -P )
 root_dir=$(dirname $(dirname "${basedir}"))
@@ -22,6 +46,12 @@ fi
 # The helper also normalizes "none"/"null" → "" so the Python entry
 # point doesn't see a literal --flag none.
 eval "$(python3 "${root_dir}/.maap/_lib/load_job_params.py" _job.json)"
+
+# Map JSON key names to the shell var names the rest of the script uses.
+# Historic jq form used these aliases; keep them so the rest of the script
+# doesn't have to be rewritten.
+filter_pattern="${filter:-${filter_pattern}}"
+exclude_pattern="${exclude:-${exclude_pattern}}"
 
 # Apply defaults for unset fields.
 : "${s3_prefix:=}"

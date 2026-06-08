@@ -2,7 +2,25 @@
 # Frozon ISS Zarr Pipeline — orchestrator runner.
 # Reads job parameters from _job.json and invokes src/pipeline_zarr.py.
 set -eo pipefail
-set +u   # explicitly disable nounset (see cog-pipeline/run-cog-pipeline.sh)
+set +u
+
+# Pre-declare all vars the script reads so nounset-inherited shells don't
+# trip up.
+input_s3_prefix="" input_https_urls=""
+collection_id="" s3_bucket="" s3_prefix="" role_arn=""
+cmss_logger_host="" mmgis_host="" titiler_token_secret_name=""
+maap_host="api.maap-project.org"
+time_regex="" chunk_size="1024"
+filter_pattern="" exclude_pattern="" limit=""
+allow_bounds_expansion="true" upsert="true"
+post_stac_webhook_url="" post_stac_webhook_token_secret_name=""
+input_source_type="s3"
+cmr_short_name="" cmr_version=""
+cmr_temporal_start="" cmr_temporal_end="" cmr_bbox="" cmr_granule_ids=""
+cmr_prefer_https="true"
+earthdata_token_secret_name=""
+retain_days="0"
+job_queue=""
 
 basedir=$( cd "$(dirname "$0")" ; pwd -P )
 root_dir=$(dirname $(dirname "${basedir}"))
@@ -14,9 +32,11 @@ if [[ ! -f "_job.json" ]]; then
     exit 1
 fi
 
-# Load all _job.json params as shell vars via the python helper
-# (replaces jq, which wasn't reliably installed on MAAP's CI).
+# Load all _job.json params as shell vars via the python helper.
 eval "$(python3 "${root_dir}/.maap/_lib/load_job_params.py" _job.json)"
+# Historic jq aliases.
+filter_pattern="${filter:-${filter_pattern}}"
+exclude_pattern="${exclude:-${exclude_pattern}}"
 
 : "${s3_prefix:=}"
 : "${maap_host:=api.maap-project.org}"
