@@ -2,7 +2,7 @@ algorithm_description: Frozon ISS COG Ingest Worker — converts a single TIFF i
 algorithm_name: frozon-iss-ingest-cog
 algorithm_version: main
 build_command: urban-giggle/.maap/ingest-cog/build.sh
-disk_space: 50GB
+disk_space: 200GB
 docker_container_url: mas.maap-project.org/root/maap-workspaces/custom_images/maap_base:v4.2.0
 inputs:
   config: []
