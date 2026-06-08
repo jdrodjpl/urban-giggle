@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
 # Frozon ISS COG ingest worker runner.
 # Reads job parameters from _job.json and invokes src/ingest_cog.py for one TIFF.
-set -euo pipefail
+set -eo pipefail
+set +u
 
 basedir=$( cd "$(dirname "$0")" ; pwd -P )
 root_dir=$(dirname $(dirname "${basedir}"))
@@ -31,38 +32,17 @@ if [[ ! -f "_job.json" ]]; then
     exit 1
 fi
 
-input_s3=$(jq -r '.params.input_s3 // empty' _job.json)
-input_https=$(jq -r '.params.input_https // empty' _job.json)
-input_s3_urls=$(jq -r '.params.input_s3_urls // empty' _job.json)
-input_https_urls=$(jq -r '.params.input_https_urls // empty' _job.json)
-mosaic_date=$(jq -r '.params.mosaic_date // empty' _job.json)
-earthdata_token_secret_name=$(jq -r '.params.earthdata_token_secret_name // empty' _job.json)
-collection_id=$(jq -r '.params.collection_id // empty' _job.json)
-s3_bucket=$(jq -r '.params.s3_bucket // empty' _job.json)
-s3_prefix=$(jq -r '.params.s3_prefix // ""' _job.json)
-role_arn=$(jq -r '.params.role_arn // empty' _job.json)
-compress=$(jq -r '.params.compress // "DEFLATE"' _job.json)
-blocksize=$(jq -r '.params.blocksize // "512"' _job.json)
-max_memory=$(jq -r '.params.max_memory // "512"' _job.json)
-resampling=$(jq -r '.params.resampling // "nearest"' _job.json)
-overview_resampling=$(jq -r '.params.overview_resampling // "average"' _job.json)
-overwrite=$(jq -r '.params.overwrite // "false"' _job.json)
-scp_host=$(jq -r '.params.scp_host // empty' _job.json)
-scp_port=$(jq -r '.params.scp_port // "22"' _job.json)
-scp_user=$(jq -r '.params.scp_user // empty' _job.json)
-scp_remote_dir=$(jq -r '.params.scp_remote_dir // empty' _job.json)
-scp_key_secret_name=$(jq -r '.params.scp_key_secret_name // empty' _job.json)
+# Pre-declare all vars (in case shell inherits nounset).
+input_s3="" input_https="" input_s3_urls="" input_https_urls="" mosaic_date=""
+earthdata_token_secret_name=""
+collection_id="" s3_bucket="" s3_prefix="" role_arn=""
+compress="DEFLATE" blocksize="512" max_memory="512"
+resampling="nearest" overview_resampling="average" overwrite="false"
+scp_host="" scp_port="22" scp_user="" scp_remote_dir="" scp_key_secret_name=""
 
-# MAAP fills unset positional inputs with the YAML default "none";
-# normalize so the Python entry point doesn't see --flag none.
-for var in input_s3 input_https input_s3_urls input_https_urls mosaic_date \
-           earthdata_token_secret_name role_arn s3_prefix \
-           scp_host scp_user scp_remote_dir scp_key_secret_name; do
-    val_lc=$(echo "${!var}" | tr '[:upper:]' '[:lower:]')
-    if [[ "${val_lc}" == "none" || "${val_lc}" == "null" ]]; then
-        eval "${var}=\"\""
-    fi
-done
+# Load all _job.json params via the python helper (jq isn't on PATH —
+# it's inside /opt/conda/envs/ingest/bin/ which we don't activate).
+eval "$(/opt/conda/envs/ingest/bin/python "${root_dir}/.maap/_lib/load_job_params.py" _job.json)"
 
 # Fallback: input file staged via MAAP file parameter into ./input/
 input_tiff=""

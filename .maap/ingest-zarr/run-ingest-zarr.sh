@@ -2,7 +2,8 @@
 # Frozon ISS Zarr ingest worker runner.
 # Reads job parameters from _job.json and invokes src/ingest_zarr.py
 # for the entire batch of new TIFF inputs at once.
-set -euo pipefail
+set -eo pipefail
+set +u
 
 basedir=$( cd "$(dirname "$0")" ; pwd -P )
 root_dir=$(dirname $(dirname "${basedir}"))
@@ -23,28 +24,18 @@ if [[ ! -f "_job.json" ]]; then
     exit 1
 fi
 
-input_s3_prefix=$(jq -r '.params.input_s3_prefix // empty' _job.json)
-input_https_urls=$(jq -r '.params.input_https_urls // empty' _job.json)
-earthdata_token_secret_name=$(jq -r '.params.earthdata_token_secret_name // empty' _job.json)
-retain_days=$(jq -r '.params.retain_days // "0"' _job.json)
-collection_id=$(jq -r '.params.collection_id // empty' _job.json)
-s3_bucket=$(jq -r '.params.s3_bucket // empty' _job.json)
-s3_prefix=$(jq -r '.params.s3_prefix // ""' _job.json)
-role_arn=$(jq -r '.params.role_arn // empty' _job.json)
-time_regex=$(jq -r '.params.time_regex // empty' _job.json)
-chunk_size=$(jq -r '.params.chunk_size // "1024"' _job.json)
-filter_pattern=$(jq -r '.params.filter // empty' _job.json)
-exclude_pattern=$(jq -r '.params.exclude // empty' _job.json)
-limit=$(jq -r '.params.limit // empty' _job.json)
-allow_bounds_expansion=$(jq -r '.params.allow_bounds_expansion // "true"' _job.json)
+# Pre-declare all vars.
+input_s3_prefix="" input_https_urls="" earthdata_token_secret_name=""
+retain_days="0"
+collection_id="" s3_bucket="" s3_prefix="" role_arn=""
+time_regex="" chunk_size="1024"
+filter_pattern="" exclude_pattern="" limit=""
+allow_bounds_expansion="true"
 
-for var in input_s3_prefix input_https_urls earthdata_token_secret_name \
-           role_arn s3_prefix time_regex filter_pattern exclude_pattern limit; do
-    val_lc=$(echo "${!var}" | tr '[:upper:]' '[:lower:]')
-    if [[ "${val_lc}" == "none" || "${val_lc}" == "null" ]]; then
-        eval "${var}=\"\""
-    fi
-done
+# Use python helper (jq is in /opt/conda/envs/ingest/bin/ which isn't on PATH).
+eval "$(/opt/conda/envs/ingest/bin/python "${root_dir}/.maap/_lib/load_job_params.py" _job.json)"
+filter_pattern="${filter:-${filter_pattern}}"
+exclude_pattern="${exclude:-${exclude_pattern}}"
 
 echo "=== Parsed parameters ==="
 echo "input_s3_prefix:          ${input_s3_prefix}"
