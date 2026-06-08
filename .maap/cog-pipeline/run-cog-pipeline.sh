@@ -1,10 +1,10 @@
 #!/usr/bin/env bash
 # Frozon ISS COG Pipeline — orchestrator runner.
 # Reads job parameters from _job.json and invokes src/pipeline_cog.py.
-set -eo pipefail   # NOTE: dropped -u because we use ${var} freely with
-                   # vars that may not be set in _job.json. The Python
-                   # helper only emits keys actually present in the JSON;
-                   # everything else stays unset and reads as empty.
+set -eo pipefail
+set +u   # explicitly disable nounset — vars not in _job.json read as
+         # empty. Forcing this OFF because some bash environments
+         # inherit -u from the caller and our script uses ${var} freely.
 
 basedir=$( cd "$(dirname "$0")" ; pwd -P )
 root_dir=$(dirname $(dirname "${basedir}"))

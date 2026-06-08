@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
 # Frozon ISS Zarr Pipeline — orchestrator runner.
 # Reads job parameters from _job.json and invokes src/pipeline_zarr.py.
-set -eo pipefail   # see cog-pipeline/run-cog-pipeline.sh for why -u is off
+set -eo pipefail
+set +u   # explicitly disable nounset (see cog-pipeline/run-cog-pipeline.sh)
 
 basedir=$( cd "$(dirname "$0")" ; pwd -P )
 root_dir=$(dirname $(dirname "${basedir}"))
