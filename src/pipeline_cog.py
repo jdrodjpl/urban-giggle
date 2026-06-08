@@ -15,7 +15,7 @@ import os
 import re
 import sys
 from collections import defaultdict
-from datetime import date, timedelta
+from datetime import date, datetime, timedelta
 from typing import Dict, List, Optional
 
 import backoff
@@ -85,9 +85,18 @@ def group_refs_by_date(input_refs: List[InputRef],
 async def submit_daily_mosaic_job(args: argparse.Namespace, maap,
                                   date_key: str, refs: List[InputRef]) -> DPSJob:
     """Submit one ingest_cog DPS job that mosaics all granules from `date_key`
-    into a single daily COG."""
+    into a single daily COG.
+
+    For CMR inputs, instead of passing the (potentially huge) URL list as a
+    param — which MAAP's submitJob rejects when it exceeds its size limit —
+    we pass the CMR query params narrowed to just this date. The worker
+    re-runs CMR for that single day and downloads on its own.
+
+    For S3 inputs the URL count is typically small (S3 prefix listing) so we
+    still pass URLs directly via input_s3_urls.
+    """
     msg = (f"Submitting daily-mosaic COG job for {date_key} "
-           f"({len(refs)} granule(s))")
+           f"({len(refs)} granule(s) discovered)")
     logger.info(msg)
     LoggingUtils.cmss_logger(msg, args.cmss_logger_host)
 
@@ -119,17 +128,29 @@ async def submit_daily_mosaic_job(args: argparse.Namespace, maap,
         if args.scp_key_secret_name:
             job_params["scp_key_secret_name"] = args.scp_key_secret_name
 
-    # All refs in a daily bucket share the same auth_kind in practice
-    # (they all came from the same CMR query). Use the first ref to decide.
     auth_kind = refs[0].auth_kind
-    urls = [r.url for r in refs]
-    if auth_kind == "s3":
-        # Pass S3 URLs as a JSON list; worker handles either one or many.
-        job_params["input_s3_urls"] = json.dumps(urls)
-    elif auth_kind == "https_edl":
-        job_params["input_https_urls"] = json.dumps(urls)
+    if auth_kind == "https_edl":
+        # Hand the worker the CMR query params, narrowed to this one date.
+        # The worker re-runs CMR + filter and downloads. This keeps the
+        # submitJob payload tiny regardless of how many granules CMR returns.
+        date_dt = datetime.strptime(date_key, "%Y%m%d")
+        next_day = (date_dt + timedelta(days=1)).strftime("%Y-%m-%d")
+        this_day = date_dt.strftime("%Y-%m-%d")
+        job_params["cmr_short_name"] = args.cmr_short_name
+        job_params["cmr_temporal_start"] = this_day
+        job_params["cmr_temporal_end"] = next_day
+        if args.cmr_version:
+            job_params["cmr_version"] = args.cmr_version
+        if args.cmr_bbox:
+            job_params["cmr_bbox"] = args.cmr_bbox
+        if args.filter_pattern:
+            job_params["filter"] = args.filter_pattern
+        job_params["cmr_prefer_https"] = "true" if args.cmr_prefer_https else "false"
         if args.earthdata_token_secret_name:
             job_params["earthdata_token_secret_name"] = args.earthdata_token_secret_name
+    elif auth_kind == "s3":
+        # S3 listings are small; just pass the URL list.
+        job_params["input_s3_urls"] = json.dumps([r.url for r in refs])
     else:
         raise RuntimeError(f"Unknown auth_kind {auth_kind!r}")
 

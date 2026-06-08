@@ -29,8 +29,36 @@ inputs:
     name: mosaic_date
     required: false
   - default: ""
-    description: MAAP secret name holding an EDL bearer token (required for input_https / input_https_urls)
+    description: MAAP secret name holding an EDL bearer token (required for input_https / input_https_urls / cmr_short_name)
     name: earthdata_token_secret_name
+    required: false
+  - default: ""
+    description: CMR collection short_name. When set with mosaic_date, worker re-queries CMR for that date and downloads (avoids submitJob payload-size limit on huge URL lists)
+    name: cmr_short_name
+    required: false
+  - default: ""
+    description: CMR collection version (optional)
+    name: cmr_version
+    required: false
+  - default: ""
+    description: CMR temporal start (ISO date, narrowed to the mosaic date)
+    name: cmr_temporal_start
+    required: false
+  - default: ""
+    description: CMR temporal end (ISO date, day after mosaic date)
+    name: cmr_temporal_end
+    required: false
+  - default: ""
+    description: CMR bbox 'west,south,east,north'
+    name: cmr_bbox
+    required: false
+  - default: "true"
+    description: Prefer HTTPS granule URLs (require EDL token) vs in-region S3
+    name: cmr_prefer_https
+    required: false
+  - default: ""
+    description: Glob filter applied to CMR results (e.g. "*VH*.tif")
+    name: filter
     required: false
   - default: none
     description: STAC collection ID

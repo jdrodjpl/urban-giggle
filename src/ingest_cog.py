@@ -322,7 +322,7 @@ def main() -> int:
     parser = argparse.ArgumentParser(
         description="Convert a single TIFF (S3 or local) to a COG and emit STAC."
     )
-    src = parser.add_mutually_exclusive_group(required=True)
+    src = parser.add_mutually_exclusive_group(required=False)
     src.add_argument("--input-s3", help="S3 URL of the input TIFF")
     src.add_argument("--input-https",
                      help="HTTPS URL of the input TIFF (Earthdata-protected; "
@@ -334,13 +334,25 @@ def main() -> int:
                      help="JSON list of Earthdata-protected HTTPS URLs to "
                           "mosaic into a single daily COG.")
     parser.add_argument("--earthdata-token-secret-name", default=None,
-                        help="MAAP secret name holding the EDL bearer token "
-                             "(or username\\npassword). Only required for "
-                             "--input-https or --input-https-urls.")
+                        help="MAAP secret name holding the EDL bearer token.")
     parser.add_argument("--mosaic-date", default=None,
                         help="YYYYMMDD used to name the daily mosaic output. "
                              "Required when --input-s3-urls / --input-https-urls "
-                             "is given.")
+                             "is given OR when using --cmr-short-name.")
+
+    # CMR-search mode — orchestrator passes these to avoid the MAAP submitJob
+    # payload-size limit for large URL lists. Worker queries CMR itself.
+    parser.add_argument("--cmr-short-name", default=None,
+                        help="CMR collection short_name. When set + mosaic-date, "
+                             "worker queries CMR for the day and downloads.")
+    parser.add_argument("--cmr-version", default=None)
+    parser.add_argument("--cmr-temporal-start", default=None)
+    parser.add_argument("--cmr-temporal-end", default=None)
+    parser.add_argument("--cmr-bbox", default=None)
+    parser.add_argument("--cmr-prefer-https", default="true",
+                        choices=["true", "false"])
+    parser.add_argument("--filter", dest="filter_pattern", default=None,
+                        help="Glob filter applied to CMR results.")
 
     parser.add_argument("--collection-id", required=True)
     parser.add_argument("--s3-bucket", required=True, help="Output bucket for the COG")
@@ -380,8 +392,57 @@ def main() -> int:
     stac_dir.mkdir(parents=True, exist_ok=True)
 
     try:
-        if args.input_s3_urls or args.input_https_urls:
-            # Daily-mosaic mode: download all inputs, merge, then COG-convert.
+        # Branch 1: CMR-search mode (orchestrator passes cmr_* params to
+        # avoid the MAAP submitJob payload-size limit on huge URL lists).
+        if args.cmr_short_name and args.mosaic_date:
+            from input_sources import ensure_edl_login
+            from input_sources.cmr_tiff import CMRTiffSource
+            from fnmatch import fnmatch
+
+            if args.earthdata_token_secret_name:
+                ensure_edl_login(args.earthdata_token_secret_name)
+
+            bbox = None
+            if args.cmr_bbox:
+                bbox = tuple(float(x) for x in args.cmr_bbox.split(','))
+            temporal = None
+            if args.cmr_temporal_start and args.cmr_temporal_end:
+                temporal = (args.cmr_temporal_start, args.cmr_temporal_end)
+
+            source = CMRTiffSource(
+                short_name=args.cmr_short_name,
+                version=args.cmr_version or None,
+                temporal=temporal,
+                bbox=bbox,
+                prefer_https=(args.cmr_prefer_https == "true"),
+            )
+            logger.info(f"Worker CMR search: {source.description}")
+            refs = source.list_inputs()
+            if args.filter_pattern:
+                before = len(refs)
+                refs = [r for r in refs if fnmatch(r.name, args.filter_pattern)]
+                logger.info(f"Filtered {before} → {len(refs)} matching {args.filter_pattern!r}")
+            if not refs:
+                raise RuntimeError(f"Worker CMR search returned 0 inputs for {source.description}")
+
+            urls = [r.url for r in refs]
+            staged_dir = work_dir / "staged"
+            staged_dir.mkdir(parents=True, exist_ok=True)
+            staged = stage_inputs_batch(
+                None, urls, staged_dir, args.role_arn,
+                earthdata_token_secret_name=args.earthdata_token_secret_name,
+            )
+            if not staged:
+                raise RuntimeError("Batch staging produced 0 input files")
+
+            mosaic_name = f"{args.collection_id}_{args.mosaic_date}_daily.tif"
+            mosaic_path = work_dir / "mosaic" / mosaic_name
+            mosaic_path.parent.mkdir(parents=True, exist_ok=True)
+            mosaic_tiffs(staged, mosaic_path)
+            input_path = mosaic_path
+
+        # Branch 2: URL-list mode (small jobs where orchestrator passes URLs).
+        elif args.input_s3_urls or args.input_https_urls:
             if not args.mosaic_date:
                 raise ValueError("--mosaic-date is required when using "
                                  "--input-s3-urls or --input-https-urls")

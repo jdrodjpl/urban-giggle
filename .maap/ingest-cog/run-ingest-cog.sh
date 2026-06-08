@@ -51,10 +51,15 @@ collection_id="" s3_bucket="" s3_prefix="" role_arn=""
 compress="DEFLATE" blocksize="512" max_memory="512"
 resampling="nearest" overview_resampling="average" overwrite="false"
 scp_host="" scp_port="22" scp_user="" scp_remote_dir="" scp_key_secret_name=""
+# CMR-search mode (worker re-queries CMR for full-day mosaics):
+cmr_short_name="" cmr_version="" cmr_temporal_start="" cmr_temporal_end=""
+cmr_bbox="" cmr_prefer_https="true" filter_pattern=""
 
 # Load all _job.json params via the python helper (jq isn't on PATH —
 # it's inside /opt/conda/envs/ingest/bin/ which we don't activate).
 eval "$(/opt/conda/envs/ingest/bin/python "${root_dir}/.maap/_lib/load_job_params.py" _job.json)"
+# Historic jq alias: JSON 'filter' key → shell var filter_pattern.
+filter_pattern="${filter:-${filter_pattern}}"
 
 # Fallback: input file staged via MAAP file parameter into ./input/
 input_tiff=""
@@ -76,28 +81,29 @@ echo "max_memory:    ${max_memory}"
 echo "========================="
 
 args=()
-if [[ -n "${input_https_urls}" ]]; then
-    # Daily-mosaic mode (HTTPS+EDL): JSON list of URLs.
+if [[ -n "${cmr_short_name}" && -n "${mosaic_date}" ]]; then
+    # CMR-search mode: worker re-queries CMR for the date itself.
+    args+=(--cmr-short-name "${cmr_short_name}")
+    args+=(--mosaic-date "${mosaic_date}")
+    [[ -n "${cmr_version}" ]] && args+=(--cmr-version "${cmr_version}")
+    [[ -n "${cmr_temporal_start}" ]] && args+=(--cmr-temporal-start "${cmr_temporal_start}")
+    [[ -n "${cmr_temporal_end}" ]] && args+=(--cmr-temporal-end "${cmr_temporal_end}")
+    [[ -n "${cmr_bbox}" ]] && args+=(--cmr-bbox="${cmr_bbox}")
+    args+=(--cmr-prefer-https "${cmr_prefer_https:-true}")
+    [[ -n "${filter_pattern}" ]] && args+=(--filter "${filter_pattern}")
+    [[ -n "${earthdata_token_secret_name}" ]] && args+=(--earthdata-token-secret-name "${earthdata_token_secret_name}")
+elif [[ -n "${input_https_urls}" ]]; then
     args+=(--input-https-urls "${input_https_urls}")
-    if [[ -n "${earthdata_token_secret_name}" ]]; then
-        args+=(--earthdata-token-secret-name "${earthdata_token_secret_name}")
-    fi
-    if [[ -n "${mosaic_date}" ]]; then
-        args+=(--mosaic-date "${mosaic_date}")
-    fi
+    [[ -n "${earthdata_token_secret_name}" ]] && args+=(--earthdata-token-secret-name "${earthdata_token_secret_name}")
+    [[ -n "${mosaic_date}" ]] && args+=(--mosaic-date "${mosaic_date}")
 elif [[ -n "${input_s3_urls}" ]]; then
-    # Daily-mosaic mode (S3): JSON list of URLs.
     args+=(--input-s3-urls "${input_s3_urls}")
-    if [[ -n "${mosaic_date}" ]]; then
-        args+=(--mosaic-date "${mosaic_date}")
-    fi
+    [[ -n "${mosaic_date}" ]] && args+=(--mosaic-date "${mosaic_date}")
 elif [[ -n "${input_s3}" ]]; then
     args+=(--input-s3 "${input_s3}")
 elif [[ -n "${input_https}" ]]; then
     args+=(--input-https "${input_https}")
-    if [[ -n "${earthdata_token_secret_name}" ]]; then
-        args+=(--earthdata-token-secret-name "${earthdata_token_secret_name}")
-    fi
+    [[ -n "${earthdata_token_secret_name}" ]] && args+=(--earthdata-token-secret-name "${earthdata_token_secret_name}")
 elif [[ -n "${input_tiff}" ]]; then
     args+=(--input-tiff "${input_tiff}")
 else
