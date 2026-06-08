@@ -109,7 +109,14 @@ async def submit_zarr_job(args: argparse.Namespace, maap,
 
     logger.info(f"Zarr worker job submitted: {job.id}")
     await wait_for_completion(job)
-    logger.info(f"Zarr worker job completed: {job.id}")
+    final = (job.status or "").lower()
+    if final in ("failed", "error") or "fail" in final:
+        err = getattr(job, 'error_details', '?')
+        raise RuntimeError(
+            f"Zarr worker job {job.id} ended in {job.status}; "
+            f"error_details={err}"
+        )
+    logger.info(f"Zarr worker job completed: {job.id} status={job.status}")
     return job
 
 

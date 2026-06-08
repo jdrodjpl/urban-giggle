@@ -144,7 +144,14 @@ async def submit_daily_mosaic_job(args: argparse.Namespace, maap,
 
     logger.info(f"Daily-mosaic job submitted ({date_key}): {job.id}")
     await wait_for_completion(job)
-    logger.info(f"Daily-mosaic job completed ({date_key}): {job.id}")
+    final = (job.status or "").lower()
+    if final in ("failed", "error") or "fail" in final:
+        err = getattr(job, 'error_details', '?')
+        raise RuntimeError(
+            f"Daily-mosaic worker job {job.id} ended in {job.status} "
+            f"(date {date_key}); error_details={err}"
+        )
+    logger.info(f"Daily-mosaic job completed ({date_key}): {job.id} status={job.status}")
     return job
 
 
