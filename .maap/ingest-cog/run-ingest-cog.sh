@@ -53,7 +53,7 @@ resampling="nearest" overview_resampling="average" overwrite="false"
 scp_host="" scp_port="22" scp_user="" scp_remote_dir="" scp_key_secret_name=""
 # CMR-search mode (worker re-queries CMR for full-day mosaics):
 cmr_short_name="" cmr_version="" cmr_temporal_start="" cmr_temporal_end=""
-cmr_bbox="" cmr_prefer_https="true" filter_pattern=""
+cmr_bbox="" cmr_prefer_https="true" filter_pattern="" limit=""
 
 # Load all _job.json params via the python helper (jq isn't on PATH —
 # it's inside /opt/conda/envs/ingest/bin/ which we don't activate).
@@ -91,6 +91,7 @@ if [[ -n "${cmr_short_name}" && -n "${mosaic_date}" ]]; then
     [[ -n "${cmr_bbox}" ]] && args+=(--cmr-bbox="${cmr_bbox}")
     args+=(--cmr-prefer-https "${cmr_prefer_https:-true}")
     [[ -n "${filter_pattern}" ]] && args+=(--filter "${filter_pattern}")
+    [[ -n "${limit}" ]] && args+=(--limit "${limit}")
     [[ -n "${earthdata_token_secret_name}" ]] && args+=(--earthdata-token-secret-name "${earthdata_token_secret_name}")
 elif [[ -n "${input_https_urls}" ]]; then
     args+=(--input-https-urls "${input_https_urls}")

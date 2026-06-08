@@ -60,6 +60,10 @@ inputs:
     description: Glob filter applied to CMR results (e.g. "*VH*.tif")
     name: filter
     required: false
+  - default: ""
+    description: Cap on CMR results (for testing); newest-first
+    name: limit
+    required: false
   - default: none
     description: STAC collection ID
     name: collection_id

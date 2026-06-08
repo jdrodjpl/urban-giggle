@@ -353,6 +353,8 @@ def main() -> int:
                         choices=["true", "false"])
     parser.add_argument("--filter", dest="filter_pattern", default=None,
                         help="Glob filter applied to CMR results.")
+    parser.add_argument("--limit", type=int, default=None,
+                        help="Cap on CMR results (newest-first); for testing.")
 
     parser.add_argument("--collection-id", required=True)
     parser.add_argument("--s3-bucket", required=True, help="Output bucket for the COG")
@@ -415,6 +417,7 @@ def main() -> int:
                 temporal=temporal,
                 bbox=bbox,
                 prefer_https=(args.cmr_prefer_https == "true"),
+                limit=args.limit,
             )
             logger.info(f"Worker CMR search: {source.description}")
             refs = source.list_inputs()

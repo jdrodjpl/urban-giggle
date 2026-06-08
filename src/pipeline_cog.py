@@ -148,6 +148,9 @@ async def submit_daily_mosaic_job(args: argparse.Namespace, maap,
         job_params["cmr_prefer_https"] = "true" if args.cmr_prefer_https else "false"
         if args.earthdata_token_secret_name:
             job_params["earthdata_token_secret_name"] = args.earthdata_token_secret_name
+        # Forward limit so worker's own CMR query stays bounded for tests.
+        if args.limit:
+            job_params["limit"] = str(args.limit)
     elif auth_kind == "s3":
         # S3 listings are small; just pass the URL list.
         job_params["input_s3_urls"] = json.dumps([r.url for r in refs])
