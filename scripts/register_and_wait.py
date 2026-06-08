@@ -39,29 +39,37 @@ TERMINAL_STATES = {"success", "failed", "canceled", "skipped", "manual"}
 def _pipeline_status(pipeline_web_url: str) -> str:
     """Scrape the pipeline page HTML for its current status.
 
-    GitLab's pipeline page is publicly accessible (no auth gate, unlike
-    the raw job log) and includes the pipeline status in the
-    `data-qa-selector` and badge classes. We grep for `ci_status_badge`
-    style markers; if multiple matches, pick the most-recent one. Returns
-    one of: pending, running, success, failed, canceled, skipped, manual,
-    or 'unknown'.
+    GitLab's UI markup has changed across versions — we try several
+    indicators in order of reliability. Returns a state name or
+    'unknown' if nothing matches.
     """
     try:
         html = urllib.request.urlopen(pipeline_web_url, timeout=30).read().decode()
     except Exception as e:
         return f"fetch-error:{e}"
 
-    # Look for the pipeline-level status. GitLab embeds it in several places;
-    # the most reliable I've found is `data-status="<state>"` on the status
-    # badge link near the top of the pipeline page.
-    candidates = re.findall(r'data-status="([a-z]+)"', html)
-    for c in candidates:
-        if c in TERMINAL_STATES or c in ("pending", "running", "preparing", "scheduled"):
-            return c
-    # Fallback — look for status icons via title attribute.
-    for state in ("success", "failed", "running", "pending", "canceled", "skipped"):
-        if f'title="{state.capitalize()}"' in html or f'aria-label="Status: {state.capitalize()}"' in html:
-            return state
+    # Try several markup forms GitLab has used.
+    patterns = [
+        r'data-status="([a-z]+)"',
+        r'data-qa-pipeline-status="([a-z]+)"',
+        r'"detailedStatus":\s*{\s*"text":\s*"([A-Za-z]+)"',
+        r'"status":\s*"([a-z]+)"',
+        r'badge-pipeline-status-([a-z]+)',
+        r'ci-status-icon-([a-z]+)',
+    ]
+    for pat in patterns:
+        for c in re.findall(pat, html):
+            c_lower = c.lower()
+            if c_lower in TERMINAL_STATES or c_lower in (
+                "pending", "running", "preparing", "scheduled", "created"
+            ):
+                return c_lower
+    # Fallback — look for title attributes.
+    for state in ("success", "passed", "failed", "running", "pending",
+                  "canceled", "skipped", "created"):
+        if (f'title="{state.capitalize()}"' in html
+                or f'aria-label="Status: {state.capitalize()}"' in html):
+            return state if state != "passed" else "success"
     return "unknown"
 
 
@@ -96,6 +104,7 @@ def register_and_wait(maap, yml_path: str, timeout_s: int = 1800) -> bool:
 
     start = time.time()
     last_status = None
+    unknown_streak = 0
     while True:
         elapsed = int(time.time() - start)
         if elapsed > timeout_s:
@@ -115,11 +124,29 @@ def register_and_wait(maap, yml_path: str, timeout_s: int = 1800) -> bool:
                   file=sys.stderr)
             return False
         if status == "skipped":
-            # 'skipped' means MAAP didn't actually rebuild — usually because
-            # nothing it cares about changed. Treat as success since the
-            # existing image is what'll be used.
             print(f"  ✓ Build skipped (image reused)", flush=True)
             return True
+
+        # If we keep getting 'unknown' (HTML scraping not finding the badge),
+        # bail to manual confirmation rather than hanging forever.
+        if status == "unknown":
+            unknown_streak += 1
+        else:
+            unknown_streak = 0
+        if unknown_streak >= 4:
+            print(f"\n  ⚠ Can't read pipeline status from HTML "
+                  f"(GitLab UI may have changed).", file=sys.stderr)
+            print(f"  Open this URL in a browser to check:", file=sys.stderr)
+            print(f"  {pipeline_web_url}", file=sys.stderr)
+            print(f"  Press Enter when the build shows 'passed' "
+                  f"(or Ctrl-C to abort): ", file=sys.stderr, end="", flush=True)
+            try:
+                input()
+                print(f"  ✓ Build confirmed manually", flush=True)
+                return True
+            except (EOFError, KeyboardInterrupt):
+                print(f"\n  ✗ Aborted", file=sys.stderr)
+                return False
 
         time.sleep(POLL_INTERVAL_S)
 
