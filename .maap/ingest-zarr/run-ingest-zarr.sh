@@ -19,6 +19,11 @@ if [[ ! -x /opt/conda/envs/ingest/bin/python ]]; then
 fi
 ENV_PYTHON=/opt/conda/envs/ingest/bin/python
 
+# Match conda activate's effect on PROJ/GDAL data paths.
+export PROJ_DATA=/opt/conda/envs/ingest/share/proj
+export PROJ_LIB=/opt/conda/envs/ingest/share/proj
+export GDAL_DATA=/opt/conda/envs/ingest/share/gdal
+
 if [[ ! -f "_job.json" ]]; then
     echo "ERROR: _job.json file not found"
     exit 1

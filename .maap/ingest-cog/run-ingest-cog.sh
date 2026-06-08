@@ -27,6 +27,16 @@ fi
 ENV_PYTHON=/opt/conda/envs/ingest/bin/python
 echo "Using ${ENV_PYTHON}"
 
+# `conda activate` normally sets PROJ_DATA/GDAL_DATA via the env's
+# activation scripts (under etc/conda/activate.d). We're invoking
+# python directly so we set them ourselves; otherwise rasterio's
+# PROJ binaries can't find proj.db.
+export PROJ_DATA=/opt/conda/envs/ingest/share/proj
+export PROJ_LIB=/opt/conda/envs/ingest/share/proj
+export GDAL_DATA=/opt/conda/envs/ingest/share/gdal
+echo "PROJ_DATA=${PROJ_DATA}"
+echo "GDAL_DATA=${GDAL_DATA}"
+
 if [[ ! -f "_job.json" ]]; then
     echo "ERROR: _job.json file not found"
     exit 1
