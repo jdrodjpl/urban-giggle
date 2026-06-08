@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Build script for the COG ingest worker.
-# BUILD_BUST=2026-06-08-2  ← bump to force a fresh Docker build.
+# BUILD_BUST=2026-06-08-3  ← bump to force a fresh Docker build.
 #
 # Uses conda env update because the geospatial stack (rasterio, gdal,
 # rioxarray, pyproj) needs coordinated C-library versions that pip

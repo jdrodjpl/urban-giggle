@@ -31,7 +31,14 @@ def main() -> int:
         # behave the same as for genuinely unset values.
         if isinstance(value, str) and value.strip().lower() in ("none", "null"):
             value = ""
-        print(f"{key}={shlex.quote(str(value))}")
+        # JSON-encode lists/dicts so downstream python code can json.loads()
+        # them. Without this, str(list) gives single-quoted Python repr like
+        # ['a','b'] which isn't valid JSON.
+        if isinstance(value, (list, dict)):
+            value = json.dumps(value)
+        else:
+            value = str(value)
+        print(f"{key}={shlex.quote(value)}")
     return 0
 
 
