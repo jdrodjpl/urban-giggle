@@ -28,6 +28,10 @@ from .base import InputRef, InputSource
 
 logger = logging.getLogger(__name__)
 
+# Cached requests.Session from the first successful EDL login. Reused
+# across all downloads in the same process — see download_https_edl.
+_EDL_SESSION = None
+
 
 @dataclass
 class CMRTiffSource:
@@ -182,9 +186,17 @@ def download_https_edl(
             "HTTPS+EDL input requires an earthdata-token-secret-name to "
             "resolve the EDL bearer token (or username\\npassword)."
         )
-    login_from_maap_secret(earthdata_token_secret_name, maap_instance=maap_instance)
-    auth = earthaccess.login(strategy="environment")
-    session = auth.get_session()
+    # Only fetch the MAAP secret and log into EDL once per process.
+    # Calling MAAP's secrets API repeatedly (e.g. ~2700 times for a
+    # full-day mosaic) eventually trips a transient failure that
+    # maap-py mishandles (raises a string, not an Exception), and
+    # we get an opaque TypeError instead of a useful error.
+    global _EDL_SESSION
+    if _EDL_SESSION is None:
+        login_from_maap_secret(earthdata_token_secret_name, maap_instance=maap_instance)
+        auth = earthaccess.login(strategy="environment")
+        _EDL_SESSION = auth.get_session()
+    session = _EDL_SESSION
 
     local_dir = Path(local_dir)
     local_dir.mkdir(parents=True, exist_ok=True)
