@@ -136,9 +136,11 @@ def convert_to_cog_lowmem(
 
     logger.info(f"Converting to COG with {max_memory_mb}MB memory limit...")
     try:
-        result = subprocess.run(cmd, capture_output=True, text=True, timeout=600)
+        # 2-hour cap — full-Arctic daily mosaics (~30 GB compressed, ~180 GB
+        # uncompressed) need substantially more than the original 10 min.
+        result = subprocess.run(cmd, capture_output=True, text=True, timeout=7200)
     except subprocess.TimeoutExpired:
-        return False, f"Conversion timeout (>10 min): {input_file.name}"
+        return False, f"Conversion timeout (>2 hr): {input_file.name}"
     finally:
         gc.collect()
 
