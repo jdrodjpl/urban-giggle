@@ -36,6 +36,10 @@ def main() -> int:
         # ['a','b'] which isn't valid JSON.
         if isinstance(value, (list, dict)):
             value = json.dumps(value)
+        elif isinstance(value, bool):
+            # Lowercase so shell comparisons like [[ "$x" == "true" ]] work,
+            # and argparse choices like {true,false} accept the value.
+            value = "true" if value else "false"
         else:
             value = str(value)
         print(f"{key}={shlex.quote(value)}")

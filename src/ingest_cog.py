@@ -350,6 +350,7 @@ def main() -> int:
     parser.add_argument("--cmr-temporal-end", default=None)
     parser.add_argument("--cmr-bbox", default=None)
     parser.add_argument("--cmr-prefer-https", default="true",
+                        type=str.lower,
                         choices=["true", "false"])
     parser.add_argument("--filter", dest="filter_pattern", default=None,
                         help="Glob filter applied to CMR results.")
