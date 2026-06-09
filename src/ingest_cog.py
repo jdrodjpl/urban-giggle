@@ -203,38 +203,58 @@ def stage_inputs_batch(input_s3_urls: Optional[List[str]],
 
 
 def mosaic_tiffs(tiffs: List[Path], output_path: Path,
+                 target_crs: str = "EPSG:3413",
+                 target_res: float = 30.0,
                  nodata: Optional[float] = None) -> Path:
-    """Mosaic a list of GeoTIFFs into one. Overlapping pixels are handled
-    by rasterio.merge's default ('first' — first-wins). For backscatter
-    data first-wins is fine; if we need a mean/max blend later we can
-    add a `--mosaic-method` flag."""
+    """Mosaic + reproject to `target_crs` via gdalwarp.
+
+    Defaults to EPSG:3413 (Arctic Polar Stereographic) since OPERA RTC
+    tiles span many UTM zones — rasterio.merge requires a single CRS,
+    so we let gdalwarp do reprojection + merge in one pass. For
+    non-polar use cases, pass a different target_crs.
+
+    Single-input case copies through without reprojection.
+    """
     if len(tiffs) == 1:
-        # Trivial case — just copy through. mosaic_tiffs is a no-op.
         shutil.copy2(str(tiffs[0]), str(output_path))
         return output_path
 
-    logger.info(f"Mosaicking {len(tiffs)} TIFF(s) → {output_path}")
-    srcs = [rasterio.open(str(t)) for t in tiffs]
-    try:
-        merged, transform = rio_merge(srcs, nodata=nodata)
-        profile = srcs[0].profile.copy()
-        profile.update({
-            'height': merged.shape[1],
-            'width': merged.shape[2],
-            'transform': transform,
-            'count': merged.shape[0],
-            'driver': 'GTiff',
-            'compress': 'deflate',
-            'bigtiff': 'IF_SAFER',
-        })
-        if nodata is not None:
-            profile['nodata'] = nodata
-        with rasterio.open(str(output_path), 'w', **profile) as dst:
-            dst.write(merged)
-    finally:
-        for s in srcs:
-            s.close()
-    logger.info(f"Mosaic written: {output_path} ({output_path.stat().st_size / 1e6:.1f} MB)")
+    logger.info(
+        f"Mosaicking {len(tiffs)} TIFF(s) via gdalwarp "
+        f"→ {target_crs} @ {target_res}m → {output_path}"
+    )
+
+    if output_path.exists():
+        output_path.unlink()
+
+    # Pass input paths directly as args. Linux execve allows ~2MB of argv,
+    # so 2700 inputs × ~300 chars ≈ 800KB fits.
+    cmd = [
+        "gdalwarp",
+        "-t_srs", target_crs,
+        "-tr", str(target_res), str(target_res),
+        "-r", "nearest",
+        "-multi",
+        "-wo", "NUM_THREADS=ALL_CPUS",
+        "-co", "COMPRESS=DEFLATE",
+        "-co", "BIGTIFF=IF_SAFER",
+        "-co", "TILED=YES",
+    ]
+    if nodata is not None:
+        cmd += ["-dstnodata", str(nodata)]
+    cmd += [str(t) for t in tiffs]
+    cmd.append(str(output_path))
+
+    logger.info(f"gdalwarp cmd: {' '.join(cmd[:13])} ... [{len(tiffs)} inputs] {output_path}")
+    result = subprocess.run(cmd, capture_output=True, text=True, timeout=7200)
+    if result.returncode != 0:
+        logger.error(f"gdalwarp stderr (last 1500): {result.stderr[-1500:]}")
+        raise RuntimeError(f"gdalwarp failed (exit {result.returncode})")
+
+    logger.info(
+        f"Mosaic written: {output_path} "
+        f"({output_path.stat().st_size / 1e6:.1f} MB)"
+    )
     return output_path
 
 
