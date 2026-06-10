@@ -127,7 +127,7 @@ def convert_to_cog_lowmem(
         '-co', 'NUM_THREADS=ALL_CPUS',
         '-co', 'TILED=YES',
         '--config', 'GDAL_CACHEMAX', str(max_memory_mb),
-        '--config', 'GDAL_NUM_THREADS', '1',
+        '--config', 'GDAL_NUM_THREADS', 'ALL_CPUS',
         '-r', resampling,
         '-q',
     ]

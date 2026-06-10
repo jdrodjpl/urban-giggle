@@ -176,10 +176,15 @@ Zarr: S3 inputs → worker (download existing Zarr → fresh/append/rebuild
 
 ## Important Implementation Details
 
-### Low-memory COG conversion
-- Single-threaded GDAL (`GDAL_NUM_THREADS=1`) with explicit `GDAL_CACHEMAX`.
+### COG conversion
 - `gdal_translate -of COG` for streaming I/O instead of loading whole rasters.
-- 10-minute subprocess timeout per file to bound runaway conversions.
+- `GDAL_CACHEMAX` controlled by `--max-memory` (default 4096MB; YAML default
+  matches). Drop to ~512MB for the 8GB queue, leave at 4096MB for the
+  32vcpu-64gb queue used for full-Arctic daily mosaics.
+- `GDAL_NUM_THREADS=ALL_CPUS` + COG-driver `NUM_THREADS=ALL_CPUS` so resampling,
+  overview build, and tile write all use every available CPU.
+- 2-hour subprocess timeout per file to bound runaway conversions; full-Arctic
+  daily mosaics (~30GB compressed, ~180GB uncompressed) typically take 30-90 min.
 
 ### Zarr build/append/rebuild dispatch
 - Append uses `xarray.Dataset.to_zarr(mode='a', append_dim='time')` — only
@@ -194,8 +199,9 @@ Zarr: S3 inputs → worker (download existing Zarr → fresh/append/rebuild
   before upload to avoid orphaned chunks from a smaller previous shape.
 
 ### Memory budgets and queues
-- COG worker: `maap-dps-worker-8gb` / 50GB disk. Default `--max-memory`
-  512MB leaves headroom.
+- COG worker: `maap-dps-worker-8gb` / 200GB disk for single-file mode;
+  `maap-dps-worker-32vcpu-64gb` for full-Arctic daily mosaics (5000+ granules,
+  ~30GB intermediate). Default `--max-memory` is 4096MB.
 - COG orchestrator: `maap-dps-worker-8gb` / 20GB disk. Pure async submitter.
 - Zarr worker: `maap-dps-worker-16gb` / 200GB disk. Heaviest job —
   downloads existing Zarr + all new TIFFs, may rebuild whole grid.

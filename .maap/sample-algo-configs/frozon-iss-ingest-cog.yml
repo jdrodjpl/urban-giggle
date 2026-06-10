@@ -88,8 +88,8 @@ inputs:
     description: COG tile block size (256, 512, 1024)
     name: blocksize
     required: false
-  - default: "512"
-    description: GDAL_CACHEMAX in MB for the conversion subprocess
+  - default: "4096"
+    description: GDAL_CACHEMAX in MB for the conversion subprocess (defaults to 4GB to suit full-Arctic daily mosaics on the 64GB queue; lower for small inputs on smaller queues)
     name: max_memory
     required: false
   - default: nearest
