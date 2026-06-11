@@ -91,6 +91,11 @@ def main() -> int:
         "retain_days":                     env("RETAIN_DAYS"),
         "filter":                          env("FILTER"),
         "time_regex":                      env("TIME_REGEX"),
+        # Lock the orchestrator to mosaicking ONLY through target_date.
+        # Even if CMR returns some target+1 granules at the temporal-end
+        # boundary, the orchestrator drops that bucket so we don't
+        # produce a partial-day COG for today-1.
+        "max_acquisition_date":            target_date.isoformat(),
     }
     limit = env("LIMIT")
     if limit:

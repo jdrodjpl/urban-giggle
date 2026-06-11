@@ -299,6 +299,17 @@ async def main() -> None:
             f"Grouped {len(input_refs)} input(s) into {len(date_groups)} "
             f"daily mosaic(s): {sorted(date_groups.keys())}"
         )
+        max_acq = getattr(args, 'max_acquisition_date', None)
+        if max_acq:
+            max_key = max_acq.replace("-", "")
+            dropped = sorted(k for k in date_groups if k > max_key)
+            for k in dropped:
+                del date_groups[k]
+            if dropped:
+                logger.info(
+                    f"Dropped {len(dropped)} date bucket(s) past "
+                    f"max_acquisition_date={max_acq}: {dropped}"
+                )
         if not date_groups:
             raise RuntimeError("No inputs could be grouped by date")
 

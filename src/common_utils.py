@@ -353,6 +353,13 @@ class ConfigUtils:
                                  "into per-date mosaics. e.g. "
                                  r"_(?P<start_date>\d{8}T\d{6})Z_")
 
+        parser.add_argument("--max-acquisition-date", default=None,
+                            help="If set, the orchestrator drops any date bucket "
+                                 "whose key is strictly after this YYYY-MM-DD "
+                                 "(or YYYYMMDD) date before submitting workers. "
+                                 "Used by the cron to prevent partial-day mosaics "
+                                 "of granules acquired after the safe-landing target.")
+
         parser.add_argument("--retain-days", type=int, default=0,
                             help="If > 0, keep only the N most recent calendar "
                                  "days of COG outputs in S3; delete the rest. "

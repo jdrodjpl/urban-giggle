@@ -21,6 +21,7 @@ overwrite="false" upsert="true"
 post_stac_webhook_url="" post_stac_webhook_token_secret_name=""
 filter_pattern="" limit="" local_download_path="output"
 time_regex=""
+max_acquisition_date=""
 input_source_type="s3"
 cmr_short_name="" cmr_version=""
 cmr_temporal_start="" cmr_temporal_end="" cmr_bbox="" cmr_granule_ids=""
@@ -160,6 +161,9 @@ if [[ -n "${limit}" ]]; then
 fi
 if [[ -n "${time_regex}" ]]; then
     args+=(--time-regex "${time_regex}")
+fi
+if [[ -n "${max_acquisition_date}" ]]; then
+    args+=(--max-acquisition-date "${max_acquisition_date}")
 fi
 args+=(--retain-days "${retain_days}")
 if [[ -n "${local_download_path}" && "${local_download_path}" != "output" ]]; then
