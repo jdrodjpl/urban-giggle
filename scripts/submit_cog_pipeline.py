@@ -69,7 +69,9 @@ def main() -> int:
     # search range covers `backfill` extra prior days for self-healing.
     target_date = today - timedelta(days=target_offset)
     start = target_date - timedelta(days=backfill)
-    end = target_date
+    # CMR treats date-only temporal_end as an exclusive boundary at start-of-day,
+    # so we shift end one day past target so the target day itself is included.
+    end = target_date + timedelta(days=1)
 
     job_params = {
         "identifier":                      f"frozon-cog-daily-{target_date.isoformat()}",
