@@ -24,22 +24,31 @@ DEFAULTS = {
     "MAAP_HOST":             "api.maap-project.org",
     "ALGO_ID":               "frozon-iss-cog-pipeline",
     "ALGO_VERSION":          "main",
-    "QUEUE":                 "maap-dps-worker-8gb",
+    # Full-Arctic VH daily mosaics need the high-vCPU/RAM worker.
+    "QUEUE":                 "maap-dps-worker-32vcpu-64gb",
     "INPUT_SOURCE_TYPE":     "cmr",
     "CMR_SHORT_NAME":        "OPERA_L2_RTC-S1_V1",
     "CMR_BBOX":              "-180,60,180,90",
     "CMR_PREFER_HTTPS":      "true",
     "EDL_SECRET_NAME":       "earthdata-token-frozon",
-    "COLLECTION_ID":         "frozon-s1-cog",
+    "COLLECTION_ID":         "frozon-rtc-s1-vh-daily",
     "S3_BUCKET":             "maap-ops-workspace",
-    "S3_PREFIX":             "jdrodrig/frozon-test/cogs/",
+    "S3_PREFIX":             "frozon/cogs/",
     "RETAIN_DAYS":           "7",
     "FILTER":                "*VH*.tif",
     "TIME_REGEX":            r"_(?P<start_date>\d{8}T\d{6})Z_",
     # TIME_REGEX is now also used by the orchestrator to group inputs
     # into per-date daily mosaics (one COG per acquisition date).
     "LIMIT":                 "",
-    "TEMPORAL_WINDOW_DAYS":  "14",
+    # Target the acquisition date (today UTC) - TARGET_OFFSET_DAYS. Default 2
+    # because RTC-S1 granules can take 12+ hours after acquisition to land in
+    # CMR, and we want the target day fully populated before we mosaic it.
+    "TARGET_OFFSET_DAYS":    "2",
+    # Plus extra days of CMR search before the target — handles backfill if
+    # previous runs failed. orchestrator groups by acquisition date and
+    # skips dates whose COG already exists in S3 (overwrite=false), so
+    # healthy days incur zero extra mosaic work.
+    "BACKFILL_DAYS":         "3",
 }
 
 
@@ -53,12 +62,17 @@ def main() -> int:
         os.environ["MAAP_PGT"] = token
     maap = MAAP(maap_host=env("MAAP_HOST"))
 
-    end = datetime.now(timezone.utc).date()
-    window = int(env("TEMPORAL_WINDOW_DAYS"))
-    start = end - timedelta(days=window)
+    today = datetime.now(timezone.utc).date()
+    target_offset = int(env("TARGET_OFFSET_DAYS"))
+    backfill = int(env("BACKFILL_DAYS"))
+    # target = the newest acquisition date we expect to be fully landed in CMR.
+    # search range covers `backfill` extra prior days for self-healing.
+    target_date = today - timedelta(days=target_offset)
+    start = target_date - timedelta(days=backfill)
+    end = target_date
 
     job_params = {
-        "identifier":                      f"frozon-cog-daily-{end.isoformat()}",
+        "identifier":                      f"frozon-cog-daily-{target_date.isoformat()}",
         "algo_id":                         env("ALGO_ID"),
         "version":                         env("ALGO_VERSION"),
         "queue":                           env("QUEUE"),
@@ -82,7 +96,7 @@ def main() -> int:
 
     job_params = {k: v for k, v in job_params.items() if v}
 
-    print(f"Submitting COG pipeline: {start} → {end}")
+    print(f"Submitting COG pipeline: target={target_date}, search window {start} → {end}")
     for k, v in sorted(job_params.items()):
         print(f"  {k}: {v}")
 

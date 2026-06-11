@@ -7,9 +7,12 @@ on:
     - cron: "15 6 * * *"
   workflow_dispatch:
     inputs:
-      temporal_window_days:
-        description: "Temporal search window in days (default 14)"
-        default: "14"
+      target_offset_days:
+        description: "Mosaic the day (today UTC - this many days). Default 2 gives RTC-S1 granules time to land."
+        default: "2"
+      backfill_days:
+        description: "Extra prior days to include in the CMR search for self-healing. Existing COGs are skipped."
+        default: "3"
       limit:
         description: "Max granules to fetch (leave blank for no limit)"
         default: ""
@@ -18,7 +21,7 @@ on:
         default: "7"
       collection_id:
         description: "STAC collection ID"
-        default: "frozon-s1-cog"
+        default: "frozon-rtc-s1-vh-daily"
 
 jobs:
   submit:
@@ -37,8 +40,9 @@ jobs:
         env:
           MAAP_TOKEN: ${{ secrets.MAAP_TOKEN }}
           MAAP_HOST: "api.maap-project.org"
-          TEMPORAL_WINDOW_DAYS: ${{ github.event.inputs.temporal_window_days || '14' }}
+          TARGET_OFFSET_DAYS: ${{ github.event.inputs.target_offset_days || '2' }}
+          BACKFILL_DAYS: ${{ github.event.inputs.backfill_days || '3' }}
           LIMIT: ${{ github.event.inputs.limit || '' }}
           RETAIN_DAYS: ${{ github.event.inputs.retain_days || '7' }}
-          COLLECTION_ID: ${{ github.event.inputs.collection_id || 'frozon-s1-cog' }}
+          COLLECTION_ID: ${{ github.event.inputs.collection_id || 'frozon-rtc-s1-vh-daily' }}
         run: python scripts/submit_cog_pipeline.py
