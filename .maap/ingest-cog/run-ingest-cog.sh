@@ -12,9 +12,14 @@ echo "Running Frozon ISS COG ingest worker..."
 echo "=== Runtime conda discovery ==="
 echo "ls /opt/conda/envs/:"; ls -la /opt/conda/envs/ 2>&1 || echo "  /opt/conda/envs not found"
 echo "ls /opt/conda/envs/ingest/bin/ (top 5):"
-ls /opt/conda/envs/ingest/bin/ 2>&1 | head -5
+# Wrap in || true so that under set -eo pipefail this diagnostic doesn't
+# kill the script before the find below runs. We WANT the next two lines
+# to print even when the env isn't where we expect.
+{ ls /opt/conda/envs/ingest/bin/ 2>&1 | head -5; } || true
 echo "find any 'ingest' env on disk:"
 { find / -maxdepth 6 -type d -name ingest 2>/dev/null | head; } || true
+echo "image build stamp:"
+cat "${root_dir}/.maap/ingest-cog/.build-stamp" 2>/dev/null || echo "  (no .build-stamp — image is pre-stamp)"
 echo "================================"
 
 # Use the env's python directly — bypass conda activate.
