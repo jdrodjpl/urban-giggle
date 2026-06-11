@@ -23,7 +23,7 @@ from maap.maap import MAAP
 DEFAULTS = {
     "MAAP_HOST":             "api.maap-project.org",
     "ALGO_ID":               "frozon-iss-cog-pipeline",
-    "ALGO_VERSION":          "main",
+    "ALGO_VERSION":          "v2",
     # Full-Arctic VH daily mosaics need the high-vCPU/RAM worker.
     "QUEUE":                 "maap-dps-worker-32vcpu-64gb",
     "INPUT_SOURCE_TYPE":     "cmr",

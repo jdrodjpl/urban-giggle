@@ -1,6 +1,6 @@
 algorithm_description: Frozon ISS COG Pipeline — orchestrates per-TIFF COG ingest jobs and STAC cataloging.
 algorithm_name: frozon-iss-cog-pipeline
-algorithm_version: main
+algorithm_version: v2
 build_command: urban-giggle/.maap/cog-pipeline/build.sh
 disk_space: 20GB
 docker_container_url: mas.maap-project.org/root/maap-workspaces/custom_images/maap_base:v4.2.0
