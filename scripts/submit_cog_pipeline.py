@@ -40,10 +40,11 @@ DEFAULTS = {
     # TIME_REGEX is now also used by the orchestrator to group inputs
     # into per-date daily mosaics (one COG per acquisition date).
     "LIMIT":                 "",
-    # Target the acquisition date (today UTC) - TARGET_OFFSET_DAYS. Default 2
-    # because RTC-S1 granules can take 12+ hours after acquisition to land in
-    # CMR, and we want the target day fully populated before we mosaic it.
-    "TARGET_OFFSET_DAYS":    "2",
+    # Target the acquisition date (today UTC) - TARGET_OFFSET_DAYS. OPERA
+    # L2 RTC-S1 has ~6 days of processing lag (the per-granule radiometric
+    # terrain correction takes time after Sentinel-1 acquisition). Default
+    # 7 gives one extra day of safety past that lag.
+    "TARGET_OFFSET_DAYS":    "7",
     # Plus extra days of CMR search before the target — handles backfill if
     # previous runs failed. orchestrator groups by acquisition date and
     # skips dates whose COG already exists in S3 (overwrite=false), so

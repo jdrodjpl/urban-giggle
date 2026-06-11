@@ -8,8 +8,8 @@ on:
   workflow_dispatch:
     inputs:
       target_offset_days:
-        description: "Mosaic the day (today UTC - this many days). Default 2 gives RTC-S1 granules time to land."
-        default: "2"
+        description: "Mosaic the day (today UTC - this many days). Default 7 covers OPERA RTC-S1's ~6-day processing lag."
+        default: "7"
       backfill_days:
         description: "Extra prior days to include in the CMR search for self-healing. Existing COGs are skipped."
         default: "3"
@@ -40,7 +40,7 @@ jobs:
         env:
           MAAP_TOKEN: ${{ secrets.MAAP_TOKEN }}
           MAAP_HOST: "api.maap-project.org"
-          TARGET_OFFSET_DAYS: ${{ github.event.inputs.target_offset_days || '2' }}
+          TARGET_OFFSET_DAYS: ${{ github.event.inputs.target_offset_days || '7' }}
           BACKFILL_DAYS: ${{ github.event.inputs.backfill_days || '3' }}
           LIMIT: ${{ github.event.inputs.limit || '' }}
           RETAIN_DAYS: ${{ github.event.inputs.retain_days || '7' }}
