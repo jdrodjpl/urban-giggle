@@ -56,8 +56,8 @@ inputs:
     description: COG tile block size (256, 512, 1024)
     name: blocksize
     required: false
-  - default: "512"
-    description: GDAL_CACHEMAX in MB for the worker subprocess
+  - default: "4096"
+    description: GDAL_CACHEMAX in MB propagated to each worker subprocess. Matches the worker YAML default; 4GB suits full-Arctic daily mosaics on the 64GB queue.
     name: max_memory
     required: false
   - default: nearest
