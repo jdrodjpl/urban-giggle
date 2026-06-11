@@ -35,6 +35,19 @@ root_dir=$(dirname $(dirname "${basedir}"))
 
 echo "Running Frozon ISS COG pipeline..."
 
+# Runtime env diagnostic — surfaces which python3 / which deps are
+# present. Bisects "wrong image cached" vs "code bug" when the
+# orchestrator crashes before producing useful output.
+echo "=== Runtime env diagnostic ==="
+echo "python3: $(command -v python3)"
+python3 --version
+python3 -c "import sys; print('sys.executable:', sys.executable)"
+python3 -m pip show maap-py 2>&1 | head -3 || echo "WARN: maap-py not installed"
+python3 -m pip show earthaccess 2>&1 | head -3 || echo "WARN: earthaccess not installed"
+echo "image-built marker:"
+cat "${root_dir}/.maap/cog-pipeline/.build-stamp" 2>/dev/null || echo "(no build stamp — image is pre-stamp)"
+echo "================================"
+
 if [[ ! -f "_job.json" ]]; then
     echo "ERROR: _job.json file not found"
     exit 1

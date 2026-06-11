@@ -18,4 +18,15 @@ python3 -m pip install -r "${basedir}/requirements.txt"
 
 python3 -c "import pystac, boto3, backoff, earthaccess; from maap.dps.dps_job import DPSJob; print('deps OK')"
 
+# Stamp the image so runtime diagnostics can prove which build we're on.
+{
+    echo "build_date: $(date -u +%Y-%m-%dT%H:%M:%SZ)"
+    echo "git_sha: ${CI_COMMIT_SHA:-unknown}"
+    echo "git_ref: ${CI_COMMIT_REF_NAME:-unknown}"
+    echo "maap_py: $(python3 -m pip show maap-py | head -2 | tr '\n' ' ')"
+} > "${basedir}/.build-stamp"
+echo "=== Build stamp ==="
+cat "${basedir}/.build-stamp"
+echo "==================="
+
 echo "Build complete!"
