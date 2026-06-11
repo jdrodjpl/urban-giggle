@@ -22,6 +22,7 @@ post_stac_webhook_url="" post_stac_webhook_token_secret_name=""
 filter_pattern="" limit="" local_download_path="output"
 time_regex=""
 max_acquisition_date=""
+mosaic_last_n_complete_days="0"
 input_source_type="s3"
 cmr_short_name="" cmr_version=""
 cmr_temporal_start="" cmr_temporal_end="" cmr_bbox="" cmr_granule_ids=""
@@ -164,6 +165,9 @@ if [[ -n "${time_regex}" ]]; then
 fi
 if [[ -n "${max_acquisition_date}" ]]; then
     args+=(--max-acquisition-date "${max_acquisition_date}")
+fi
+if [[ -n "${mosaic_last_n_complete_days}" && "${mosaic_last_n_complete_days}" != "0" ]]; then
+    args+=(--mosaic-last-n-complete-days "${mosaic_last_n_complete_days}")
 fi
 args+=(--retain-days "${retain_days}")
 if [[ -n "${local_download_path}" && "${local_download_path}" != "output" ]]; then

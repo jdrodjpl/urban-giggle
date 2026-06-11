@@ -141,6 +141,10 @@ inputs:
     name: max_acquisition_date
     required: false
   - default: "0"
+    description: If > 0, after grouping by date the orchestrator drops the single newest date (assumed potentially incomplete) and keeps only the next N most recent dates. Cron uses this to self-discover the safe-landing boundary instead of betting on a fixed offset.
+    name: mosaic_last_n_complete_days
+    required: false
+  - default: "0"
     description: If > 0, keep only the N most recent calendar days of COG outputs in S3 after cataloging; delete the rest.
     name: retain_days
     required: false

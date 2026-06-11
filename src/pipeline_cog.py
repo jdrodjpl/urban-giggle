@@ -310,6 +310,19 @@ async def main() -> None:
                     f"Dropped {len(dropped)} date bucket(s) past "
                     f"max_acquisition_date={max_acq}: {dropped}"
                 )
+        last_n = getattr(args, 'mosaic_last_n_complete_days', 0) or 0
+        if last_n > 0 and date_groups:
+            sorted_desc = sorted(date_groups.keys(), reverse=True)
+            newest = sorted_desc[0]
+            keep = set(sorted_desc[1:1 + last_n])
+            dropped = [k for k in date_groups if k not in keep]
+            for k in dropped:
+                del date_groups[k]
+            logger.info(
+                f"Dropped newest date {newest} (potentially incomplete) "
+                f"and any older than the next {last_n} complete dates. "
+                f"Kept {sorted(date_groups.keys())}"
+            )
         if not date_groups:
             raise RuntimeError("No inputs could be grouped by date")
 

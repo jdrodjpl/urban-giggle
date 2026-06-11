@@ -40,16 +40,16 @@ DEFAULTS = {
     # TIME_REGEX is now also used by the orchestrator to group inputs
     # into per-date daily mosaics (one COG per acquisition date).
     "LIMIT":                 "",
-    # Target the acquisition date (today UTC) - TARGET_OFFSET_DAYS. OPERA
-    # L2 RTC-S1 has ~6 days of processing lag (the per-granule radiometric
-    # terrain correction takes time after Sentinel-1 acquisition). Default
-    # 7 gives one extra day of safety past that lag.
-    "TARGET_OFFSET_DAYS":    "7",
-    # Plus extra days of CMR search before the target — handles backfill if
-    # previous runs failed. orchestrator groups by acquisition date and
-    # skips dates whose COG already exists in S3 (overwrite=false), so
-    # healthy days incur zero extra mosaic work.
-    "BACKFILL_DAYS":         "3",
+    # Generous CMR lookback so the orchestrator can SEE every recently
+    # available acquisition date and pick the right ones itself, rather
+    # than us betting on a fixed processing-lag offset.
+    "LOOKBACK_DAYS":         "30",
+    # Of the dates returned by CMR, the orchestrator drops the single
+    # newest (potentially incomplete — granules may still be landing)
+    # and mosaics the next N most recent complete dates. Workers skip
+    # dates whose COG already exists in S3 (overwrite=false), so the
+    # steady-state cost is one new mosaic per day.
+    "MOSAIC_LAST_N_COMPLETE_DAYS": "7",
 }
 
 
@@ -64,18 +64,15 @@ def main() -> int:
     maap = MAAP(maap_host=env("MAAP_HOST"))
 
     today = datetime.now(timezone.utc).date()
-    target_offset = int(env("TARGET_OFFSET_DAYS"))
-    backfill = int(env("BACKFILL_DAYS"))
-    # target = the newest acquisition date we expect to be fully landed in CMR.
-    # search range covers `backfill` extra prior days for self-healing.
-    target_date = today - timedelta(days=target_offset)
-    start = target_date - timedelta(days=backfill)
-    # CMR treats date-only temporal_end as an exclusive boundary at start-of-day,
-    # so we shift end one day past target so the target day itself is included.
-    end = target_date + timedelta(days=1)
+    lookback = int(env("LOOKBACK_DAYS"))
+    # CMR temporal_end is exclusive at day-resolution, so push one past today
+    # to ensure today's partial data is visible to the orchestrator (which
+    # then drops it as "newest = potentially incomplete").
+    start = today - timedelta(days=lookback)
+    end = today + timedelta(days=1)
 
     job_params = {
-        "identifier":                      f"frozon-cog-daily-{target_date.isoformat()}",
+        "identifier":                      f"frozon-cog-daily-{today.isoformat()}",
         "algo_id":                         env("ALGO_ID"),
         "version":                         env("ALGO_VERSION"),
         "queue":                           env("QUEUE"),
@@ -92,11 +89,7 @@ def main() -> int:
         "retain_days":                     env("RETAIN_DAYS"),
         "filter":                          env("FILTER"),
         "time_regex":                      env("TIME_REGEX"),
-        # Lock the orchestrator to mosaicking ONLY through target_date.
-        # Even if CMR returns some target+1 granules at the temporal-end
-        # boundary, the orchestrator drops that bucket so we don't
-        # produce a partial-day COG for today-1.
-        "max_acquisition_date":            target_date.isoformat(),
+        "mosaic_last_n_complete_days":     env("MOSAIC_LAST_N_COMPLETE_DAYS"),
     }
     limit = env("LIMIT")
     if limit:
@@ -104,7 +97,9 @@ def main() -> int:
 
     job_params = {k: v for k, v in job_params.items() if v}
 
-    print(f"Submitting COG pipeline: target={target_date}, search window {start} → {end}")
+    print(f"Submitting COG pipeline: CMR lookback {start} → {end}, "
+          f"orchestrator will mosaic the {env('MOSAIC_LAST_N_COMPLETE_DAYS')} most "
+          f"recent complete dates (newest dropped as potentially incomplete)")
     for k, v in sorted(job_params.items()):
         print(f"  {k}: {v}")
 

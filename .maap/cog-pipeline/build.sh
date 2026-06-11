@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Build script for the Frozon COG pipeline orchestrator. No conda — pip only.
-# BUILD_BUST=2026-06-11-1  ← bump to force a fresh Docker build (cache hit
+# BUILD_BUST=2026-06-11-2  ← bump to force a fresh Docker build (cache hit
 #                            on algorithm_version=main otherwise re-uses
 #                            the prior image even when source changed).
 set -euo pipefail

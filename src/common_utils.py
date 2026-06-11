@@ -360,6 +360,13 @@ class ConfigUtils:
                                  "Used by the cron to prevent partial-day mosaics "
                                  "of granules acquired after the safe-landing target.")
 
+        parser.add_argument("--mosaic-last-n-complete-days", type=int, default=0,
+                            help="If > 0, after grouping by date the orchestrator "
+                                 "drops the single newest date (assumed potentially "
+                                 "incomplete) and keeps only the next N most recent "
+                                 "dates. Lets the cron self-discover the safe-landing "
+                                 "boundary instead of betting on a fixed offset.")
+
         parser.add_argument("--retain-days", type=int, default=0,
                             help="If > 0, keep only the N most recent calendar "
                                  "days of COG outputs in S3; delete the rest. "

@@ -7,12 +7,12 @@ on:
     - cron: "15 6 * * *"
   workflow_dispatch:
     inputs:
-      target_offset_days:
-        description: "Mosaic the day (today UTC - this many days). Default 7 covers OPERA RTC-S1's ~6-day processing lag."
+      lookback_days:
+        description: "CMR temporal lookback. Orchestrator discovers which dates have data and picks the N most recent complete ones."
+        default: "30"
+      mosaic_last_n_complete_days:
+        description: "How many recent complete dates to mosaic per run (newest CMR date is dropped as potentially incomplete)."
         default: "7"
-      backfill_days:
-        description: "Extra prior days to include in the CMR search for self-healing. Existing COGs are skipped."
-        default: "3"
       limit:
         description: "Max granules to fetch (leave blank for no limit)"
         default: ""
@@ -40,8 +40,8 @@ jobs:
         env:
           MAAP_TOKEN: ${{ secrets.MAAP_TOKEN }}
           MAAP_HOST: "api.maap-project.org"
-          TARGET_OFFSET_DAYS: ${{ github.event.inputs.target_offset_days || '7' }}
-          BACKFILL_DAYS: ${{ github.event.inputs.backfill_days || '3' }}
+          LOOKBACK_DAYS: ${{ github.event.inputs.lookback_days || '30' }}
+          MOSAIC_LAST_N_COMPLETE_DAYS: ${{ github.event.inputs.mosaic_last_n_complete_days || '7' }}
           LIMIT: ${{ github.event.inputs.limit || '' }}
           RETAIN_DAYS: ${{ github.event.inputs.retain_days || '7' }}
           COLLECTION_ID: ${{ github.event.inputs.collection_id || 'frozon-rtc-s1-vh-daily' }}
