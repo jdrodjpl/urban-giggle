@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Build script for the Frozon COG pipeline orchestrator. No conda — pip only.
-# BUILD_BUST=2026-06-02-5  ← bump to force a fresh Docker build (cache hit
+# BUILD_BUST=2026-06-10-1  ← bump to force a fresh Docker build (cache hit
 #                            on algorithm_version=main otherwise re-uses
 #                            the prior image even when source changed).
 set -euo pipefail
@@ -16,6 +16,6 @@ echo "PYTHON: $(which python3) ($(python3 --version 2>&1))"
 python3 -m pip install --upgrade pip
 python3 -m pip install -r "${basedir}/requirements.txt"
 
-python3 -c "import pystac, boto3, backoff, earthaccess; print('deps OK')"
+python3 -c "import pystac, boto3, backoff, earthaccess; from maap.dps.dps_job import DPSJob; print('deps OK')"
 
 echo "Build complete!"
