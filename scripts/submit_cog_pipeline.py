@@ -96,59 +96,55 @@ def _login_edl(maap: MAAP) -> None:
 
 
 def discover_acquisition_dates(maap: MAAP) -> list[str]:
-    """CMR-search the configured collection/bbox for the lookback window and
-    return the sorted-descending list of unique acquisition dates (YYYYMMDD)
-    extracted from granule filenames matching FILTER."""
+    """Walk back day-by-day from today, querying CMR for just the granule
+    count per date until we've found `MOSAIC_LAST_N_COMPLETE_DAYS + 1`
+    dates with data (the +1 is the newest we drop). Returns dates
+    newest-first as YYYYMMDD strings.
+
+    Per-day `.hits()` queries are O(KB) each so this stays well under
+    CMR's connection limits — earlier attempts to pull the full 30-day
+    granule set in one shot tripped RemoteDisconnected errors.
+    """
     import earthaccess
 
     _login_edl(maap)
 
-    today = datetime.now(timezone.utc).date()
-    start = today - timedelta(days=int(env("LOOKBACK_DAYS")))
-    # CMR temporal_end is exclusive at start-of-day; push past today so the
-    # newest still-partial day is visible (we drop it below).
-    end = today + timedelta(days=1)
-
-    kwargs = {
-        "short_name": env("CMR_SHORT_NAME"),
-        "temporal": (start.isoformat(), end.isoformat()),
-    }
+    short_name = env("CMR_SHORT_NAME")
     bbox = env("CMR_BBOX")
-    if bbox:
-        kwargs["bounding_box"] = tuple(float(c) for c in bbox.split(","))
-
-    print(f"CMR search: {kwargs}")
-    results = earthaccess.search_data(**kwargs)
-    print(f"  → {len(results)} granule(s)")
-
-    # FILTER is a shell-style glob (e.g. "*VH*.tif"); convert to a regex.
-    filt_re = re.compile(
-        env("FILTER").replace(".", r"\.").replace("*", ".*")
+    bbox_tuple = (
+        tuple(float(c) for c in bbox.split(",")) if bbox else None
     )
-    name_re = re.compile(env("TIME_REGEX"))
+    lookback = int(env("LOOKBACK_DAYS"))
+    target_count = int(env("MOSAIC_LAST_N_COMPLETE_DAYS")) + 1  # +1 for drop-newest
 
-    dates: set[str] = set()
-    for g in results:
+    today = datetime.now(timezone.utc).date()
+    print(f"Walking back from {today.isoformat()} up to {lookback} day(s), "
+          f"collecting {target_count} dates with data.")
+
+    dates_with_data: list[str] = []
+    for offset in range(1, lookback + 1):
+        if len(dates_with_data) >= target_count:
+            break
+        day = today - timedelta(days=offset)
+        next_day = day + timedelta(days=1)
+        q = earthaccess.DataGranules().short_name(short_name).temporal(
+            day.isoformat(), next_day.isoformat()
+        )
+        if bbox_tuple:
+            q = q.bounding_box(*bbox_tuple)
         try:
-            urls = g.data_links(access="external") or []
-        except Exception:
-            urls = []
-        for url in urls:
-            name = os.path.basename(url.split("?", 1)[0])
-            if not name.lower().endswith((".tif", ".tiff")):
-                continue
-            if not filt_re.search(name):
-                continue
-            m = name_re.search(name)
-            if not m:
-                continue
-            try:
-                ts = m.group("start_date")
-            except (IndexError, KeyError):
-                ts = m.group(1)
-            dates.add(ts[:8])
+            count = q.hits()
+        except Exception as e:
+            print(f"  {day.isoformat()}: CMR hits() failed ({e}) — skip")
+            continue
+        if count > 0:
+            dates_with_data.append(day.strftime("%Y%m%d"))
+            print(f"  {day.isoformat()}: {count} granule(s) ✓ "
+                  f"({len(dates_with_data)}/{target_count})")
+        else:
+            print(f"  {day.isoformat()}: 0 granules")
 
-    return sorted(dates, reverse=True)
+    return dates_with_data
 
 
 def submit_worker_for_date(maap: MAAP, date_key: str):
