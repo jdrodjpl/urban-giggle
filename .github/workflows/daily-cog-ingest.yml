@@ -8,16 +8,10 @@ on:
   workflow_dispatch:
     inputs:
       lookback_days:
-        description: "CMR temporal lookback. Orchestrator discovers which dates have data and picks the N most recent complete ones."
+        description: "CMR temporal lookback. The runner discovers which dates have data and picks the N most recent complete ones."
         default: "30"
       mosaic_last_n_complete_days:
         description: "How many recent complete dates to mosaic per run (newest CMR date is dropped as potentially incomplete)."
-        default: "7"
-      limit:
-        description: "Max granules to fetch (leave blank for no limit)"
-        default: ""
-      retain_days:
-        description: "Keep the N most recent calendar days of COGs (count-based, not a window)"
         default: "7"
       collection_id:
         description: "STAC collection ID"
@@ -33,16 +27,16 @@ jobs:
         with:
           python-version: "3.12"
 
-      - name: Install maap-py
-        run: pip install maap-py
+      - name: Install dependencies
+        # earthaccess is the CMR client the runner uses for in-process
+        # discovery now that we've dropped the orchestrator container.
+        run: pip install maap-py earthaccess
 
-      - name: Submit COG pipeline job
+      - name: Discover dates and submit COG worker jobs
         env:
           MAAP_TOKEN: ${{ secrets.MAAP_TOKEN }}
           MAAP_HOST: "api.maap-project.org"
           LOOKBACK_DAYS: ${{ github.event.inputs.lookback_days || '30' }}
           MOSAIC_LAST_N_COMPLETE_DAYS: ${{ github.event.inputs.mosaic_last_n_complete_days || '7' }}
-          LIMIT: ${{ github.event.inputs.limit || '' }}
-          RETAIN_DAYS: ${{ github.event.inputs.retain_days || '7' }}
           COLLECTION_ID: ${{ github.event.inputs.collection_id || 'frozon-rtc-s1-vh-daily' }}
         run: python scripts/submit_cog_pipeline.py
