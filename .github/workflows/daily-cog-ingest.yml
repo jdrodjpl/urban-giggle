@@ -13,6 +13,9 @@ on:
       mosaic_last_n_complete_days:
         description: "How many recent complete dates to mosaic per run (newest CMR date is dropped as potentially incomplete)."
         default: "7"
+      retain_days:
+        description: "Keep the N most recent acquisition-date folders in S3; delete the rest. 0 disables."
+        default: "7"
       collection_id:
         description: "STAC collection ID"
         default: "frozon-rtc-s1-vh-daily"
@@ -28,15 +31,25 @@ jobs:
           python-version: "3.12"
 
       - name: Install dependencies
-        # earthaccess is the CMR client the runner uses for in-process
-        # discovery now that we've dropped the orchestrator container.
-        run: pip install maap-py earthaccess
+        # earthaccess is the CMR client; boto3 is used for the S3
+        # retention sweep that runs before submission.
+        run: pip install maap-py earthaccess boto3
 
-      - name: Discover dates and submit COG worker jobs
+      - name: Configure AWS credentials
+        # Needed for the retention sweep: list + delete on
+        # s3://maap-ops-workspace/frozon/cogs/<collection>/...
+        uses: aws-actions/configure-aws-credentials@v5
+        with:
+          aws-region: us-west-2
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+
+      - name: Prune old COGs and submit worker jobs
         env:
           MAAP_TOKEN: ${{ secrets.MAAP_TOKEN }}
           MAAP_HOST: "api.maap-project.org"
           LOOKBACK_DAYS: ${{ github.event.inputs.lookback_days || '30' }}
           MOSAIC_LAST_N_COMPLETE_DAYS: ${{ github.event.inputs.mosaic_last_n_complete_days || '7' }}
+          RETAIN_DAYS: ${{ github.event.inputs.retain_days || '7' }}
           COLLECTION_ID: ${{ github.event.inputs.collection_id || 'frozon-rtc-s1-vh-daily' }}
         run: python scripts/submit_cog_pipeline.py

@@ -60,6 +60,10 @@ DEFAULTS = {
     "RESAMPLING":                   "nearest",
     "OVERVIEW_RESAMPLING":          "average",
     "OVERWRITE":                    "false",
+    # Retention — keep the N most recent acquisition-date folders in S3,
+    # delete the rest. Runs at the top of each cron so we free space
+    # before submitting new mosaics. Set 0 to disable.
+    "RETAIN_DAYS":                  "7",
 }
 
 
@@ -147,6 +151,67 @@ def discover_acquisition_dates(maap: MAAP) -> list[str]:
     return dates_with_data
 
 
+def prune_old_cogs() -> None:
+    """List the configured collection prefix in S3, group objects by their
+    `/YYYY/MM/DD/` date folder, keep the `RETAIN_DAYS` most recent, and
+    delete the rest. Count-based — sparse data never gets pruned below
+    `RETAIN_DAYS` even when those days are spread far apart.
+
+    Requires AWS credentials available to the default boto3 chain
+    (env vars in the GH Actions runner via aws-actions/configure-aws-credentials).
+    """
+    retain_days = int(env("RETAIN_DAYS"))
+    if retain_days <= 0:
+        print(f"Retention disabled (RETAIN_DAYS={retain_days}).")
+        return
+
+    import boto3
+    from datetime import date as _date
+
+    bucket = env("S3_BUCKET")
+    prefix_parts = [p for p in (env("S3_PREFIX").strip("/"), env("COLLECTION_ID")) if p]
+    prefix = "/".join(prefix_parts) + "/"
+
+    s3 = boto3.client("s3")
+    date_pattern = re.compile(r"/(\d{4})/(\d{2})/(\d{2})/")
+    objects_by_date: dict[_date, list[str]] = {}
+
+    paginator = s3.get_paginator("list_objects_v2")
+    for page in paginator.paginate(Bucket=bucket, Prefix=prefix):
+        for obj in page.get("Contents", []):
+            key = obj["Key"]
+            m = date_pattern.search(key)
+            if m:
+                d = _date(int(m.group(1)), int(m.group(2)), int(m.group(3)))
+                objects_by_date.setdefault(d, []).append(key)
+
+    if not objects_by_date:
+        print(f"Retention: no date folders under s3://{bucket}/{prefix}.")
+        return
+
+    sorted_desc = sorted(objects_by_date.keys(), reverse=True)
+    dates_to_keep = set(sorted_desc[:retain_days])
+    dates_to_drop = [d for d in sorted_desc if d not in dates_to_keep]
+    to_delete = [k for d in dates_to_drop for k in objects_by_date[d]]
+
+    print(f"Retention: {len(sorted_desc)} date folder(s) present. "
+          f"Keeping {len(dates_to_keep)}: {sorted(d.isoformat() for d in dates_to_keep)}")
+
+    if not to_delete:
+        print("Retention: nothing past the keep window — no deletes.")
+        return
+
+    print(f"Retention: deleting {len(to_delete)} object(s) "
+          f"from {[d.isoformat() for d in dates_to_drop]}")
+    for i in range(0, len(to_delete), 1000):
+        batch = to_delete[i:i + 1000]
+        s3.delete_objects(
+            Bucket=bucket,
+            Delete={"Objects": [{"Key": k} for k in batch]},
+        )
+    print(f"Retention: deleted {len(to_delete)} object(s).")
+
+
 def submit_worker_for_date(maap: MAAP, date_key: str):
     """Submit one DPS worker job in CMR-self-query mode for a single date."""
     date_dt = datetime.strptime(date_key, "%Y%m%d")
@@ -185,6 +250,8 @@ def main() -> int:
     if token:
         os.environ["MAAP_PGT"] = token
     maap = MAAP(maap_host=env("MAAP_HOST"))
+
+    prune_old_cogs()
 
     available = discover_acquisition_dates(maap)
     if len(available) < 2:
