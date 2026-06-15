@@ -56,6 +56,16 @@ DEFAULTS = {
     # Of the dates returned by CMR, drop the newest (potentially still
     # landing) and submit workers for the next N most recent dates.
     "MOSAIC_LAST_N_COMPLETE_DAYS":  "7",
+    # Any candidate date whose granule count is below this fraction of the
+    # max granule count we observed during discovery gets dropped as
+    # likely still-landing. Set 0 to disable the filter. Per recent
+    # observation, full-Arctic daily counts ~5000-7700; lagging dates
+    # (e.g. 2026-06-10 at 1980) are obvious outliers at 0.5.
+    "MIN_GRANULE_FRACTION":         "0.5",
+    # Extra dates to query past the keep window so the threshold filter
+    # has slack — if `buffer` dates are dropped as partial, we still
+    # have enough complete dates to fill the keep window.
+    "DISCOVERY_BUFFER":             "2",
     # Worker tuning — forwarded to each per-date job.
     "COMPRESS":                     "DEFLATE",
     "BLOCKSIZE":                    "512",
@@ -102,15 +112,16 @@ def _login_edl(maap: MAAP) -> None:
         raise RuntimeError(f"EDL auth failed via MAAP secret {secret_name!r}")
 
 
-def discover_acquisition_dates(maap: MAAP) -> list[str]:
-    """Walk back day-by-day from today, querying CMR for just the granule
-    count per date until we've found `MOSAIC_LAST_N_COMPLETE_DAYS + 1`
-    dates with data (the +1 is the newest we drop). Returns dates
-    newest-first as YYYYMMDD strings.
+def discover_acquisition_dates(maap: MAAP) -> list[tuple[str, int]]:
+    """Walk back day-by-day from today, querying CMR for the granule count
+    per date. Returns `[(YYYYMMDD, count), ...]` newest-first.
 
-    Per-day `.hits()` queries are O(KB) each so this stays well under
-    CMR's connection limits — earlier attempts to pull the full 30-day
-    granule set in one shot tripped RemoteDisconnected errors.
+    We collect `last_n + 1 (drop-newest) + buffer (threshold filter slack)`
+    dates with data so the threshold filter applied in main() can drop a
+    few partial-day candidates without leaving the keep window short.
+
+    Per-day `.hits()` queries are O(KB) each — keeps us well under CMR's
+    connection limits (the earlier bulk get_all() tripped RemoteDisconnected).
     """
     import earthaccess
 
@@ -122,15 +133,19 @@ def discover_acquisition_dates(maap: MAAP) -> list[str]:
         tuple(float(c) for c in bbox.split(",")) if bbox else None
     )
     lookback = int(env("LOOKBACK_DAYS"))
-    target_count = int(env("MOSAIC_LAST_N_COMPLETE_DAYS")) + 1  # +1 for drop-newest
+    target_count = (
+        int(env("MOSAIC_LAST_N_COMPLETE_DAYS"))
+        + 1   # newest dropped as potentially incomplete
+        + int(env("DISCOVERY_BUFFER"))  # slack for threshold filter
+    )
 
     today = datetime.now(timezone.utc).date()
     print(f"Walking back from {today.isoformat()} up to {lookback} day(s), "
           f"collecting {target_count} dates with data.")
 
-    dates_with_data: list[str] = []
+    dates_with_counts: list[tuple[str, int]] = []
     for offset in range(1, lookback + 1):
-        if len(dates_with_data) >= target_count:
+        if len(dates_with_counts) >= target_count:
             break
         day = today - timedelta(days=offset)
         next_day = day + timedelta(days=1)
@@ -145,13 +160,13 @@ def discover_acquisition_dates(maap: MAAP) -> list[str]:
             print(f"  {day.isoformat()}: CMR hits() failed ({e}) — skip")
             continue
         if count > 0:
-            dates_with_data.append(day.strftime("%Y%m%d"))
+            dates_with_counts.append((day.strftime("%Y%m%d"), count))
             print(f"  {day.isoformat()}: {count} granule(s) ✓ "
-                  f"({len(dates_with_data)}/{target_count})")
+                  f"({len(dates_with_counts)}/{target_count})")
         else:
             print(f"  {day.isoformat()}: 0 granules")
 
-    return dates_with_data
+    return dates_with_counts
 
 
 def _maap_s3_client(maap: MAAP):
@@ -284,10 +299,33 @@ def main() -> int:
               f"need ≥2 (one to drop, one to mosaic). Exiting.")
         return 1
 
+    newest_date, newest_count = available[0]
+    print(f"Dropped newest date {newest_date} "
+          f"({newest_count} granule(s) — assumed potentially incomplete).")
+
+    rest = available[1:]
+
+    # Granule-count threshold filter — any date with significantly fewer
+    # granules than the max in this window is probably still landing.
+    threshold_factor = float(env("MIN_GRANULE_FRACTION"))
+    if threshold_factor > 0 and rest:
+        max_count = max(c for _, c in rest)
+        floor = max_count * threshold_factor
+        below = [(d, c) for d, c in rest if c < floor]
+        rest = [(d, c) for d, c in rest if c >= floor]
+        if below:
+            print(f"Dropped {len(below)} below-threshold date(s) "
+                  f"(< {floor:.0f} granules = {threshold_factor:.0%} of "
+                  f"max {max_count}):")
+            for d, c in below:
+                print(f"  {d}: {c} granule(s)")
+
     last_n = int(env("MOSAIC_LAST_N_COMPLETE_DAYS"))
-    newest = available[0]
-    candidates = available[1:1 + last_n]
-    print(f"Dropped newest date {newest} (potentially incomplete).")
+    candidates = [d for d, _ in rest[:last_n]]
+
+    if not candidates:
+        print("No candidate dates survived filtering. Nothing to submit.")
+        return 0
     print(f"Submitting {len(candidates)} worker(s) for: {candidates}")
 
     submitted: list[str] = []

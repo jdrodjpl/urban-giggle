@@ -13,6 +13,9 @@ on:
       mosaic_last_n_complete_days:
         description: "How many recent complete dates to mosaic per run (newest CMR date is dropped as potentially incomplete)."
         default: "7"
+      min_granule_fraction:
+        description: "Drop any candidate date whose granule count is below this fraction of the max in the discovery window. 0 disables."
+        default: "0.5"
       retain_days:
         description: "Keep the N most recent acquisition-date folders in S3; delete the rest. 0 disables."
         default: "7"
@@ -42,6 +45,7 @@ jobs:
           MAAP_HOST: "api.maap-project.org"
           LOOKBACK_DAYS: ${{ github.event.inputs.lookback_days || '30' }}
           MOSAIC_LAST_N_COMPLETE_DAYS: ${{ github.event.inputs.mosaic_last_n_complete_days || '7' }}
+          MIN_GRANULE_FRACTION: ${{ github.event.inputs.min_granule_fraction || '0.5' }}
           RETAIN_DAYS: ${{ github.event.inputs.retain_days || '7' }}
           COLLECTION_ID: ${{ github.event.inputs.collection_id || 'frozon-rtc-s1-vh-daily' }}
         run: python scripts/submit_cog_pipeline.py
