@@ -88,6 +88,31 @@ def stage_inputs_from_s3(s3_prefix: str, local_dir: Path,
     return local_paths
 
 
+def stage_inputs_from_s3_urls(urls: List[str], local_dir: Path,
+                              role_arn: Optional[str]) -> List[Path]:
+    """Download a list of explicit `s3://bucket/key` URIs to `local_dir`.
+
+    Used by sync mode — the runner passes the exact COG paths we want to
+    add as new time slices, rather than an S3 prefix to crawl. Lets the
+    runner do all the filtering (e.g. "only the dates missing from the
+    existing Zarr") without the worker having to walk a whole bucket.
+    """
+    local_dir.mkdir(parents=True, exist_ok=True)
+    paths: List[Path] = []
+    seen_buckets: dict[str, object] = {}
+    for url in urls:
+        bucket, key = AWSUtils.parse_s3_path(url)
+        s3 = seen_buckets.get(bucket)
+        if s3 is None:
+            s3 = AWSUtils.get_s3_client(role_arn=role_arn, bucket_name=bucket)
+            seen_buckets[bucket] = s3
+        local_path = local_dir / Path(key).name
+        s3.download_file(bucket, key, str(local_path))
+        paths.append(local_path)
+    logger.info(f"Staged {len(paths)} TIFF(s) from explicit S3 URLs")
+    return paths
+
+
 def stage_inputs_from_https(urls: List[str], local_dir: Path,
                              earthdata_token_secret_name: Optional[str]) -> List[Path]:
     """Download a list of Earthdata-protected HTTPS URLs to `local_dir`.
@@ -247,6 +272,65 @@ def append_in_place(local_zarr: Path, new_tiffs: List[Path],
     )
     new_ds.to_zarr(str(local_zarr), mode='a', append_dim='time', consolidated=True)
     logger.info(f"Appended {len(new_slices)} slice(s) in place to {local_zarr}")
+
+
+def sync_zarr(args: argparse.Namespace,
+              new_tiffs: List[Path],
+              work_dir: Path,
+              final_zarr: Path,
+              zarr_s3_url: str) -> Tuple[str, datetime, datetime, dict]:
+    """Sync mode: rewrite the Zarr so its time dimension contains exactly
+    the dates in `args.desired_dates`.
+
+    Pulls down the existing Zarr (if any), dumps only the slices whose
+    date is still desired (via `dump_zarr_slices_to_tiffs(keep_dates=...)`),
+    combines them with `new_tiffs` (the runner is expected to have
+    pre-filtered the input set to "dates not already in the Zarr"), and
+    runs `build_zarr_streaming` on the union.
+
+    The runner is responsible for passing both halves correctly:
+      - `--desired-dates`: the final set of YYYYMMDD dates.
+      - input source (`--input-s3-urls` etc.): only the dates the existing
+        Zarr doesn't already have. The runner has already done that diff.
+    """
+    desired_dates = {d.strip() for d in args.desired_dates.split(",") if d.strip()}
+    if not desired_dates:
+        raise RuntimeError("--desired-dates parsed to an empty set")
+
+    has_existing = zarr_io.zarr_store_exists_in_s3(zarr_s3_url, args.role_arn)
+    kept_tiffs: List[Path] = []
+    if has_existing:
+        existing_local = work_dir / "existing.zarr"
+        zarr_io.download_zarr_store(zarr_s3_url, existing_local, args.role_arn)
+        slice_dir = work_dir / "kept_slices"
+        kept_tiffs = zarr_io.dump_zarr_slices_to_tiffs(
+            existing_local, slice_dir, keep_dates=desired_dates,
+        )
+        logger.info(
+            f"Sync: kept {len(kept_tiffs)} slice(s) from existing Zarr "
+            f"that match desired_dates."
+        )
+    else:
+        logger.info(f"Sync: no existing Zarr at {zarr_s3_url}; building fresh.")
+
+    combined = kept_tiffs + new_tiffs
+    if not combined:
+        raise RuntimeError(
+            "Sync: nothing to write — existing Zarr (if any) has no slices "
+            "matching desired_dates, and no new tiffs were supplied."
+        )
+
+    ok = bzss.build_zarr_streaming(
+        tiff_files=combined,
+        output_path=final_zarr,
+        chunk_size=args.chunk_size,
+        time_regex=args.time_regex,
+    )
+    if not ok:
+        raise RuntimeError("build_zarr_streaming failed during sync")
+
+    bounds, min_dt, max_dt = read_zarr_summary(final_zarr)
+    return "sync", min_dt, max_dt, bounds
 
 
 def build_or_upsert(args: argparse.Namespace,
@@ -412,6 +496,19 @@ def main() -> int:
     src.add_argument("--input-tiff-dir", help="Local TIFF directory (test mode)")
     src.add_argument("--input-https-urls",
                      help="JSON list of Earthdata-protected HTTPS URLs to download.")
+    src.add_argument("--input-s3-urls",
+                     help="JSON list of explicit s3:// URIs (use with "
+                          "--desired-dates for sync mode).")
+
+    parser.add_argument("--desired-dates", default=None,
+                        help="Comma-separated YYYYMMDD list. When set, worker "
+                             "runs in sync mode: opens the existing Zarr, drops "
+                             "any slice whose acquisition date isn't in this "
+                             "list, then merges in slices from --input-s3-urls "
+                             "(or whichever input source) and writes back. "
+                             "Slices missing on both sides become unrecoverable, "
+                             "so the runner is responsible for passing both the "
+                             "desired set and the new-to-add S3 URLs.")
 
     parser.add_argument("--earthdata-token-secret-name", default=None,
                         help="MAAP secret name holding EDL bearer token (or "
@@ -472,18 +569,32 @@ def main() -> int:
             new_tiffs = stage_inputs_from_https(
                 urls, new_tiff_dir, args.earthdata_token_secret_name,
             )
+        elif args.input_s3_urls:
+            urls = json.loads(args.input_s3_urls)
+            new_tiffs = stage_inputs_from_s3_urls(
+                urls, new_tiff_dir, args.role_arn,
+            )
         else:
             new_tiffs = stage_inputs_from_s3(
                 args.input_s3_prefix, new_tiff_dir, args.role_arn,
                 args.filter_pattern, args.exclude_pattern, args.limit,
             )
 
-        if not new_tiffs:
+        # In sync mode the new-tiffs list can legitimately be empty (e.g.
+        # COG retention dropped a date and nothing new landed) — we still
+        # need to rewrite the Zarr to reflect the deletion. Reject empty
+        # only for the original dispatch flow.
+        if not new_tiffs and not args.desired_dates:
             raise RuntimeError("No TIFF inputs to process")
 
-        mode, min_dt, max_dt, bounds = build_or_upsert(
-            args, new_tiffs, work_dir, final_zarr, zarr_s3_url
-        )
+        if args.desired_dates:
+            mode, min_dt, max_dt, bounds = sync_zarr(
+                args, new_tiffs, work_dir, final_zarr, zarr_s3_url,
+            )
+        else:
+            mode, min_dt, max_dt, bounds = build_or_upsert(
+                args, new_tiffs, work_dir, final_zarr, zarr_s3_url
+            )
         logger.info(f"Zarr built ({mode}); time range {min_dt.isoformat()} → {max_dt.isoformat()}")
 
         if args.retain_days > 0:

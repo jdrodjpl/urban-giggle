@@ -1,6 +1,6 @@
 algorithm_description: Frozon ISS Zarr Ingest Worker — builds or upserts a sparse Zarr time series in S3 from a batch of TIFF inputs.
 algorithm_name: frozon-iss-ingest-zarr
-algorithm_version: main
+algorithm_version: v3
 build_command: urban-giggle/.maap/ingest-zarr/build.sh
 disk_space: 200GB
 docker_container_url: mas.maap-project.org/root/maap-workspaces/custom_images/maap_base:v4.2.0
@@ -59,6 +59,14 @@ inputs:
   - default: ""
     description: MAAP secret name holding EDL bearer token (or username\npassword); required for input_https_urls
     name: earthdata_token_secret_name
+    required: false
+  - default: ""
+    description: JSON list of explicit s3:// URIs to ingest as new time slices (sync mode — runner-side flow).
+    name: input_s3_urls
+    required: false
+  - default: ""
+    description: Comma-separated YYYYMMDD list. When set, worker runs in sync mode — Zarr's final time dim becomes exactly this set (existing slices outside it are dropped, new ones from --input-s3-urls are added).
+    name: desired_dates
     required: false
   - default: "0"
     description: If > 0, keep only the N most recent calendar days of Zarr slices after build/append; drop the rest

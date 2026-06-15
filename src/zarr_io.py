@@ -161,7 +161,11 @@ def bounds_contain(outer: Dict, inner: Dict, tol: float = 1e-6) -> bool:
     )
 
 
-def dump_zarr_slices_to_tiffs(local_zarr: Path, output_dir: Path) -> List[Path]:
+def dump_zarr_slices_to_tiffs(
+    local_zarr: Path,
+    output_dir: Path,
+    keep_dates: Optional[set] = None,
+) -> List[Path]:
     """Extract every time slice from a Zarr store (built by
     build_zarr_sparse_streaming) as a georeferenced GeoTIFF in
     `output_dir`. Each file's mtime is set to the slice's datetime so
@@ -199,6 +203,14 @@ def dump_zarr_slices_to_tiffs(local_zarr: Path, output_dir: Path) -> List[Path]:
             dt = datetime.fromtimestamp(ts.astype('datetime64[s]').astype(int), tz=timezone.utc)
         else:
             dt = datetime.fromtimestamp(int(ts) / 1e9, tz=timezone.utc)
+
+        # Sync mode: caller passes the set of acquisition dates that should
+        # survive into the rebuilt Zarr. Slices for any other date get
+        # silently skipped here so they don't make it into the combined
+        # input list. NB: keep_dates is YYYYMMDD strings; we derive the
+        # same form from the slice's datetime.
+        if keep_dates is not None and dt.strftime("%Y%m%d") not in keep_dates:
+            continue
 
         # Include trailing 'Z_' so the filename matches a typical satellite
         # time_regex like `_(?P<start_date>\d{8}T\d{6})Z_`. The streaming

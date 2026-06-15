@@ -2,24 +2,19 @@ name: Daily Zarr ingest
 
 on:
   schedule:
-    # Run daily at 06:00 UTC — gives OPERA RTC ~6 days of processing
-    # lag before the window captures the latest available granules.
-    - cron: "0 6 * * *"
+    # Run daily at 12:00 UTC — after the COG cron at 06:15 has had time
+    # to finish (full-Arctic mosaic workers take 1-2 hours). The Zarr
+    # is a synced mirror of the COG state, so it has to run after, not
+    # alongside.
+    - cron: "0 12 * * *"
   workflow_dispatch:
-    # Manual trigger from the Actions tab for testing / ad-hoc runs.
     inputs:
-      temporal_window_days:
-        description: "Temporal search window in days (default 14)"
-        default: "14"
-      limit:
-        description: "Max granules to fetch (leave blank for no limit)"
-        default: ""
-      retain_days:
-        description: "Keep the N most recent calendar days of Zarr slices (count-based, not a window)"
-        default: "7"
-      collection_id:
-        description: "STAC collection ID (also names the Zarr)"
-        default: "frozon-s1-zarr"
+      zarr_collection_id:
+        description: "Zarr collection / STAC id (also names the Zarr store)."
+        default: "frozon-rtc-s1-vh-zarr"
+      cog_collection_id:
+        description: "Source COG collection id (under jdrodrig/frozon/cogs/)."
+        default: "frozon-rtc-s1-vh-daily"
 
 jobs:
   submit:
@@ -31,16 +26,16 @@ jobs:
         with:
           python-version: "3.12"
 
-      - name: Install maap-py
-        run: pip install maap-py
+      - name: Install dependencies
+        # boto3 for COG listing; xarray + zarr + s3fs to read the
+        # existing Zarr's time coord from S3 without downloading the
+        # whole store; maap-py for submitJob + workspace credentials.
+        run: pip install maap-py boto3 xarray zarr s3fs
 
-      - name: Submit Zarr pipeline job
+      - name: Diff COG state vs existing Zarr and submit sync job
         env:
           MAAP_TOKEN: ${{ secrets.MAAP_TOKEN }}
           MAAP_HOST: "api.maap-project.org"
-          # Override defaults from workflow_dispatch inputs (if provided)
-          TEMPORAL_WINDOW_DAYS: ${{ github.event.inputs.temporal_window_days || '14' }}
-          LIMIT: ${{ github.event.inputs.limit || '' }}
-          RETAIN_DAYS: ${{ github.event.inputs.retain_days || '7' }}
-          COLLECTION_ID: ${{ github.event.inputs.collection_id || 'frozon-s1-zarr' }}
+          ZARR_COLLECTION_ID: ${{ github.event.inputs.zarr_collection_id || 'frozon-rtc-s1-vh-zarr' }}
+          COG_COLLECTION_ID: ${{ github.event.inputs.cog_collection_id || 'frozon-rtc-s1-vh-daily' }}
         run: python scripts/submit_zarr_pipeline.py

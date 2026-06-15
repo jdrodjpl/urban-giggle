@@ -32,6 +32,7 @@ fi
 
 # Pre-declare all vars.
 input_s3_prefix="" input_https_urls="" earthdata_token_secret_name=""
+input_s3_urls="" desired_dates=""
 retain_days="0"
 collection_id="" s3_bucket="" s3_prefix="" role_arn=""
 time_regex="" chunk_size="1024"
@@ -54,7 +55,11 @@ echo "allow_bounds_expansion:   ${allow_bounds_expansion}"
 echo "========================="
 
 args=()
-if [[ -n "${input_https_urls}" ]]; then
+# Sync mode (runner-side flow) takes precedence: --input-s3-urls is the
+# new-to-add set, --desired-dates is the final time-dim spec.
+if [[ -n "${input_s3_urls}" ]]; then
+    args+=(--input-s3-urls "${input_s3_urls}")
+elif [[ -n "${input_https_urls}" ]]; then
     args+=(--input-https-urls "${input_https_urls}")
     if [[ -n "${earthdata_token_secret_name}" ]]; then
         args+=(--earthdata-token-secret-name "${earthdata_token_secret_name}")
@@ -65,8 +70,11 @@ elif [ -d "input" ] && [ "$(ls -A input 2>/dev/null)" ]; then
     echo "Falling back to staged input/ directory"
     args+=(--input-tiff-dir "input")
 else
-    echo "ERROR: no input provided (input_https_urls, input_s3_prefix, or staged input/)"
+    echo "ERROR: no input provided (input_s3_urls, input_https_urls, input_s3_prefix, or staged input/)"
     exit 1
+fi
+if [[ -n "${desired_dates}" ]]; then
+    args+=(--desired-dates "${desired_dates}")
 fi
 args+=(--retain-days "${retain_days}")
 
