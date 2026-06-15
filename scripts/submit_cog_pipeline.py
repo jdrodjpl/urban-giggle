@@ -151,28 +151,73 @@ def discover_acquisition_dates(maap: MAAP) -> list[str]:
     return dates_with_data
 
 
-def prune_old_cogs() -> None:
+def _maap_s3_client(maap: MAAP):
+    """Return a boto3 S3 client authorized via maap-py's workspace
+    bucket credentials. Avoids managing AWS access keys directly in
+    GH Actions secrets — the runner already has MAAP_PGT, and MAAP
+    knows how to vend short-lived credentials for the workspace
+    bucket.
+    """
+    import boto3
+
+    # maap-py exposes the workspace credentials API; the exact attribute
+    # path has varied across versions. Try the known shapes in order.
+    creds = None
+    for path in ("aws.workspace_bucket_credentials", "workspace_bucket_credentials"):
+        target = maap
+        try:
+            for attr in path.split("."):
+                target = getattr(target, attr)
+            creds = target() if callable(target) else target
+            if creds:
+                break
+        except AttributeError:
+            continue
+
+    if not creds:
+        raise RuntimeError(
+            "Could not obtain workspace-bucket credentials from maap-py. "
+            "Check that maap.aws.workspace_bucket_credentials() exists "
+            "in your installed maap-py version."
+        )
+
+    # Normalize key casing — maap-py has historically returned both
+    # accessKeyId-style and aws_access_key_id-style dicts.
+    def pick(d, *keys):
+        for k in keys:
+            if k in d:
+                return d[k]
+        raise KeyError(f"None of {keys} present in workspace credentials")
+
+    return boto3.client(
+        "s3",
+        aws_access_key_id=pick(creds, "accessKeyId", "aws_access_key_id", "AccessKeyId"),
+        aws_secret_access_key=pick(creds, "secretAccessKey", "aws_secret_access_key", "SecretAccessKey"),
+        aws_session_token=pick(creds, "sessionToken", "aws_session_token", "SessionToken"),
+    )
+
+
+def prune_old_cogs(maap: MAAP) -> None:
     """List the configured collection prefix in S3, group objects by their
     `/YYYY/MM/DD/` date folder, keep the `RETAIN_DAYS` most recent, and
     delete the rest. Count-based — sparse data never gets pruned below
     `RETAIN_DAYS` even when those days are spread far apart.
 
-    Requires AWS credentials available to the default boto3 chain
-    (env vars in the GH Actions runner via aws-actions/configure-aws-credentials).
+    S3 credentials come from maap-py's workspace credentials API so the
+    runner only needs MAAP_PGT — no separate AWS secrets to manage.
     """
     retain_days = int(env("RETAIN_DAYS"))
     if retain_days <= 0:
         print(f"Retention disabled (RETAIN_DAYS={retain_days}).")
         return
 
-    import boto3
     from datetime import date as _date
 
     bucket = env("S3_BUCKET")
     prefix_parts = [p for p in (env("S3_PREFIX").strip("/"), env("COLLECTION_ID")) if p]
     prefix = "/".join(prefix_parts) + "/"
 
-    s3 = boto3.client("s3")
+    s3 = _maap_s3_client(maap)
     date_pattern = re.compile(r"/(\d{4})/(\d{2})/(\d{2})/")
     objects_by_date: dict[_date, list[str]] = {}
 
@@ -251,7 +296,7 @@ def main() -> int:
         os.environ["MAAP_PGT"] = token
     maap = MAAP(maap_host=env("MAAP_HOST"))
 
-    prune_old_cogs()
+    prune_old_cogs(maap)
 
     available = discover_acquisition_dates(maap)
     if len(available) < 2:

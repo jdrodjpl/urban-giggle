@@ -32,17 +32,9 @@ jobs:
 
       - name: Install dependencies
         # earthaccess is the CMR client; boto3 is used for the S3
-        # retention sweep that runs before submission.
+        # retention sweep (S3 creds come from maap-py at runtime, no
+        # separate AWS secrets needed).
         run: pip install maap-py earthaccess boto3
-
-      - name: Configure AWS credentials
-        # Needed for the retention sweep: list + delete on
-        # s3://maap-ops-workspace/frozon/cogs/<collection>/...
-        uses: aws-actions/configure-aws-credentials@v5
-        with:
-          aws-region: us-west-2
-          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
-          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
 
       - name: Prune old COGs and submit worker jobs
         env:
