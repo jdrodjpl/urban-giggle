@@ -279,24 +279,41 @@ def sync_zarr(args: argparse.Namespace,
               work_dir: Path,
               final_zarr: Path,
               zarr_s3_url: str) -> Tuple[str, datetime, datetime, dict]:
-    """Sync mode: rewrite the Zarr so its time dimension contains exactly
-    the dates in `args.desired_dates`.
+    """Sync mode (streaming): rewrite the Zarr so its time dimension contains
+    exactly the dates in `args.desired_dates`.
 
-    Pulls down the existing Zarr (if any), dumps only the slices whose
-    date is still desired (via `dump_zarr_slices_to_tiffs(keep_dates=...)`),
-    combines them with `new_tiffs` (the runner is expected to have
-    pre-filtered the input set to "dates not already in the Zarr"), and
-    runs `build_zarr_streaming` on the union.
+    Stream-processes one COG at a time to keep peak disk usage bounded
+    (~1 COG worth, ~25 GiB for full-Arctic VH) regardless of how many
+    new COGs the runner asks us to add. MAAP queue instance disk caps
+    aren't actually overridden by the YAML's disk_space request, so we
+    can't rely on pre-staging the whole input set.
 
-    The runner is responsible for passing both halves correctly:
-      - `--desired-dates`: the final set of YYYYMMDD dates.
-      - input source (`--input-s3-urls` etc.): only the dates the existing
-        Zarr doesn't already have. The runner has already done that diff.
+    Flow:
+      1. If an existing Zarr is present, dump only the slices matching
+         desired_dates to local TIFFs, and use those as the seed
+         (these are the kept dates the runner says to preserve).
+      2. Build a fresh Zarr from the first available TIFF (kept or new).
+      3. For each remaining input — one at a time:
+            download (if S3 URL) → append to the Zarr → delete the
+            local TIFF before the next iteration.
+      4. Return summary metadata for the STAC item.
+
+    The runner side (scripts/submit_zarr_pipeline.py) is responsible
+    for passing only the truly-new S3 URLs in --input-s3-urls and the
+    full target date set in --desired-dates; existing-date dedup
+    happens runner-side.
     """
+    import shutil
+
     desired_dates = {d.strip() for d in args.desired_dates.split(",") if d.strip()}
     if not desired_dates:
         raise RuntimeError("--desired-dates parsed to an empty set")
 
+    s3_urls: List[str] = []
+    if args.input_s3_urls:
+        s3_urls = json.loads(args.input_s3_urls)
+
+    # ---- Phase 1: dump kept slices from existing Zarr (if any). ----
     has_existing = zarr_io.zarr_store_exists_in_s3(zarr_s3_url, args.role_arn)
     kept_tiffs: List[Path] = []
     if has_existing:
@@ -310,27 +327,83 @@ def sync_zarr(args: argparse.Namespace,
             f"Sync: kept {len(kept_tiffs)} slice(s) from existing Zarr "
             f"that match desired_dates."
         )
+        # Free the downloaded existing Zarr now that we've extracted what we need.
+        try:
+            shutil.rmtree(existing_local)
+        except Exception:
+            pass
     else:
         logger.info(f"Sync: no existing Zarr at {zarr_s3_url}; building fresh.")
 
-    combined = kept_tiffs + new_tiffs
-    if not combined:
-        raise RuntimeError(
-            "Sync: nothing to write — existing Zarr (if any) has no slices "
-            "matching desired_dates, and no new tiffs were supplied."
-        )
+    # Seed list — kept slices first, then file paths the runner already
+    # staged via --input-s3-prefix or --input-tiff-dir (these are
+    # already local; we'll append them as-is).
+    seed_tiffs: List[Path] = list(kept_tiffs) + list(new_tiffs)
 
-    ok = bzss.build_zarr_streaming(
-        tiff_files=combined,
-        output_path=final_zarr,
-        chunk_size=args.chunk_size,
-        time_regex=args.time_regex,
-    )
-    if not ok:
-        raise RuntimeError("build_zarr_streaming failed during sync")
+    # ---- Phase 2: build the initial Zarr from the first available TIFF. ----
+    iterator: List[Path] = []  # TIFFs we still need to fold in after seeding
+    if seed_tiffs:
+        first = seed_tiffs[0]
+        ok = bzss.build_zarr_streaming(
+            tiff_files=[first],
+            output_path=final_zarr,
+            chunk_size=args.chunk_size,
+            time_regex=args.time_regex,
+        )
+        if not ok:
+            raise RuntimeError("build_zarr_streaming failed on seed TIFF")
+        iterator = list(seed_tiffs[1:])
+    elif not s3_urls:
+        raise RuntimeError(
+            "Sync: nothing to write — existing Zarr has no slices matching "
+            "desired_dates, no local tiffs, and no S3 URLs to fetch."
+        )
+    else:
+        # No seed locally — download the first S3 URL and use it as the seed.
+        first_url = s3_urls[0]
+        first_path = _download_one_s3(work_dir, first_url, args.role_arn)
+        ok = bzss.build_zarr_streaming(
+            tiff_files=[first_path],
+            output_path=final_zarr,
+            chunk_size=args.chunk_size,
+            time_regex=args.time_regex,
+        )
+        first_path.unlink(missing_ok=True)
+        if not ok:
+            raise RuntimeError("build_zarr_streaming failed on seed S3 download")
+        s3_urls = s3_urls[1:]
+
+    # ---- Phase 3: append remaining locals one at a time. ----
+    for tiff in iterator:
+        append_in_place(final_zarr, [tiff], args.time_regex)
+        # If the TIFF came from `kept_slices` it's safe to drop now.
+        # Local --input-tiff-dir inputs we leave alone.
+        if tiff.parent.name == "kept_slices":
+            tiff.unlink(missing_ok=True)
+
+    # ---- Phase 4: stream-in any remaining S3 URLs. ----
+    for url in s3_urls:
+        local = _download_one_s3(work_dir, url, args.role_arn)
+        try:
+            append_in_place(final_zarr, [local], args.time_regex)
+        finally:
+            local.unlink(missing_ok=True)
 
     bounds, min_dt, max_dt = read_zarr_summary(final_zarr)
     return "sync", min_dt, max_dt, bounds
+
+
+def _download_one_s3(work_dir: Path, uri: str,
+                     role_arn: Optional[str]) -> Path:
+    """Download a single s3:// URI into a per-call scratch dir under
+    `work_dir/cog_scratch/`. Caller is responsible for unlinking."""
+    scratch = work_dir / "cog_scratch"
+    scratch.mkdir(parents=True, exist_ok=True)
+    bucket, key = AWSUtils.parse_s3_path(uri)
+    s3 = AWSUtils.get_s3_client(role_arn=role_arn, bucket_name=bucket)
+    local = scratch / Path(key).name
+    s3.download_file(bucket, key, str(local))
+    return local
 
 
 def build_or_upsert(args: argparse.Namespace,
@@ -570,10 +643,16 @@ def main() -> int:
                 urls, new_tiff_dir, args.earthdata_token_secret_name,
             )
         elif args.input_s3_urls:
-            urls = json.loads(args.input_s3_urls)
-            new_tiffs = stage_inputs_from_s3_urls(
-                urls, new_tiff_dir, args.role_arn,
-            )
+            if args.desired_dates:
+                # Sync mode handles S3 URLs internally one at a time
+                # (download → append → delete) to keep peak disk usage
+                # bounded. Don't pre-stage them.
+                new_tiffs = []
+            else:
+                urls = json.loads(args.input_s3_urls)
+                new_tiffs = stage_inputs_from_s3_urls(
+                    urls, new_tiff_dir, args.role_arn,
+                )
         else:
             new_tiffs = stage_inputs_from_s3(
                 args.input_s3_prefix, new_tiff_dir, args.role_arn,
