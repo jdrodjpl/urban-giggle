@@ -36,7 +36,10 @@ DEFAULTS = {
     "MAAP_HOST":                 "api.maap-project.org",
     "WORKER_ALGO_ID":            "frozon-iss-ingest-zarr",
     "WORKER_ALGO_VERSION":       "v3",
-    "QUEUE":                     "maap-dps-worker-16gb",
+    # Same queue the COG worker runs on — known warm/scaled, and the
+    # extra headroom is welcome on first-build runs (7 × 25 GiB COGs
+    # staged to local disk + Zarr write).
+    "QUEUE":                     "maap-dps-worker-32vcpu-64gb",
     # Source COGs we sync FROM.
     "COG_S3_BUCKET":             "maap-ops-workspace",
     "COG_S3_PREFIX":             "jdrodrig/frozon/cogs/",
