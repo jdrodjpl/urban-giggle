@@ -252,6 +252,22 @@ def prune_old_cogs(maap: MAAP) -> None:
     print(f"Retention: deleted {len(to_delete)} object(s).")
 
 
+def cog_exists_in_s3(s3, date_key: str) -> bool:
+    """Check whether a COG already lives at the worker's expected S3 path
+    for `date_key`. The worker's overwrite=false only guards a LOCAL
+    filesystem path, not S3 — so without this pre-check the cron would
+    re-mosaic dates whose COGs already exist and clobber them on upload.
+    """
+    yyyy, mm, dd = date_key[:4], date_key[4:6], date_key[6:8]
+    bucket = env("S3_BUCKET")
+    prefix_parts = [
+        p for p in (env("S3_PREFIX").strip("/"), env("COLLECTION_ID")) if p
+    ]
+    key_prefix = "/".join(prefix_parts) + f"/{yyyy}/{mm}/{dd}/"
+    r = s3.list_objects_v2(Bucket=bucket, Prefix=key_prefix, MaxKeys=1)
+    return r.get("KeyCount", 0) > 0
+
+
 def submit_worker_for_date(maap: MAAP, date_key: str):
     """Submit one DPS worker job in CMR-self-query mode for a single date."""
     date_dt = datetime.strptime(date_key, "%Y%m%d")
@@ -326,11 +342,28 @@ def main() -> int:
     if not candidates:
         print("No candidate dates survived filtering. Nothing to submit.")
         return 0
-    print(f"Submitting {len(candidates)} worker(s) for: {candidates}")
+
+    # Pre-check S3 — the worker's overwrite=false guards LOCAL files only,
+    # not the S3 upload, so without this pre-check we'd clobber existing
+    # COGs by re-mosaicking dates that already have them.
+    s3 = _maap_s3_client(maap)
+    to_submit: list[str] = []
+    skipped: list[str] = []
+    for date_key in candidates:
+        if cog_exists_in_s3(s3, date_key):
+            skipped.append(date_key)
+        else:
+            to_submit.append(date_key)
+    if skipped:
+        print(f"Skipping {len(skipped)} date(s) with existing COG in S3: {skipped}")
+    if not to_submit:
+        print("All candidate dates already have COGs. Nothing to submit.")
+        return 0
+    print(f"Submitting {len(to_submit)} worker(s) for: {to_submit}")
 
     submitted: list[str] = []
     failed: list[str] = []
-    for date_key in candidates:
+    for date_key in to_submit:
         try:
             job = submit_worker_for_date(maap, date_key)
         except Exception as e:
@@ -345,8 +378,9 @@ def main() -> int:
         submitted.append(job.id)
 
     print()
-    print(f"Summary: {len(submitted)} submitted, {len(failed)} failed "
-          f"out of {len(candidates)} candidate date(s).")
+    print(f"Summary: {len(submitted)} submitted, {len(failed)} failed, "
+          f"{len(skipped)} already-existing skipped "
+          f"(out of {len(candidates)} candidate date(s)).")
     print("Workers run independently; each handles overwrite=false dedup so "
           "dates whose COG already exists in S3 will no-op.")
     return 0 if not failed else 2
