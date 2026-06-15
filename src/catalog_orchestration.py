@@ -1,10 +1,13 @@
 """
 Shared STAC cataloging + post-STAC webhook orchestration.
 
-Used by both pipeline_cog.py (per-TIFF COG outputs) and pipeline_zarr.py
-(single-Zarr output). Each worker emits a `catalog.json` to its DPS output;
-the orchestrator pulls every catalog, upserts collections/items into MMGIS,
-and fires the per-item webhook if configured.
+Used by pipeline_zarr.py — the Zarr orchestrator still runs as a MAAP
+algo and uses these helpers after the worker completes. The COG
+orchestrator has been retired; daily COG runs submit workers directly
+from the GH Actions cron and rely on each worker's own per-COG STAC
+catalog rather than a post-hoc MMGIS upsert. If we later need MMGIS
+cataloging for daily COGs, the right place is a follow-up GH Actions
+step (or a STAC service that watches S3).
 """
 
 import argparse

@@ -38,19 +38,8 @@ python src/ingest_cog.py --input-https https://... \
   --earthdata-token-secret-name earthdata-token-frozon \
   --collection-id C123-FROZON --s3-bucket bucket --role-arn arn:...
 
-# Orchestrator, S3 prefix (default --input-source-type=s3)
-python src/pipeline_cog.py --input-s3-prefix s3://bucket/prefix/ \
-  --collection-id C123-FROZON --s3-bucket bucket --role-arn arn:... \
-  --job-queue maap-dps-worker-8gb
-
-# Orchestrator, CMR search
-python src/pipeline_cog.py --input-source-type cmr \
-  --cmr-short-name SENTINEL-1A_DUAL_POL_METADATA_GRD_HD \
-  --cmr-temporal-start 2024-01-01 --cmr-temporal-end 2024-01-02 \
-  --cmr-bbox -180,60,180,90 \
-  --earthdata-token-secret-name earthdata-token-frozon \
-  --collection-id frozon-test-s1 --s3-bucket bucket --role-arn arn:... \
-  --job-queue maap-dps-worker-8gb
+# Orchestration runs in the GH Actions cron, not as a MAAP algo.
+# See scripts/submit_cog_pipeline.py for the discovery + submit logic.
 ```
 
 ### Local development (Zarr)
@@ -67,26 +56,35 @@ python src/pipeline_zarr.py --input-s3-prefix s3://bucket/prefix/ \
 
 ### MAAP execution
 ```bash
-.maap/cog-pipeline/run-cog-pipeline.sh    # COG orchestrator
-.maap/ingest-cog/run-ingest-cog.sh        # COG worker (per-TIFF)
+.maap/ingest-cog/run-ingest-cog.sh        # COG worker (per-acquisition-day)
 .maap/zarr-pipeline/run-zarr-pipeline.sh  # Zarr orchestrator
 .maap/ingest-zarr/run-ingest-zarr.sh      # Zarr worker (batch)
 ```
 
+The COG orchestrator that used to live at `.maap/cog-pipeline/` has been
+retired. Daily COG runs are kicked off from `.github/workflows/daily-cog-ingest.yml`
+which runs `scripts/submit_cog_pipeline.py` in a GH Actions runner — that
+script does the CMR discovery, drop-newest + threshold filtering, S3
+pre-check, and `maap.submitJob()` calls directly. Worker stays registered
+on MAAP as `frozon-iss-ingest-cog:v2`.
+
 ## Architecture
 
 ### COG pipeline flow
-1. **Orchestrator** (`pipeline_cog.py`) — resolves inputs via an `InputSource`
-   (S3 prefix or CMR search), submits one DPS worker job per resolved
-   `InputRef` against `algo_id="frozon-iss-ingest-cog"`, awaits all jobs,
-   walks **every** worker `catalog.json`, upserts collections/items into
-   MMGIS (default `upsert_items=True`), and optionally fires a per-item
-   post-STAC webhook.
-2. **Worker** (`ingest_cog.py`) — stages input (S3 download or
-   HTTPS+EDL fetch) → `gdal_translate -of COG` under a `GDAL_CACHEMAX`
-   cap → validates → builds a STAC item via `rio_stac` → uploads to a
-   dated key `<prefix>/<collection>/YYYY/MM/DD/<file>` → finalizes the
-   asset href → emits `output/stac/catalog.json`.
+1. **GH Actions cron** (`scripts/submit_cog_pipeline.py`) — runs daily at
+   06:15 UTC. Logs into EDL via the `earthdata-token-frozon` MAAP secret;
+   walks back day-by-day querying CMR for granule counts; drops the
+   newest date (still landing) plus any date below `MIN_GRANULE_FRACTION`
+   of the max count in the window; pre-checks S3 to skip dates whose
+   COG already exists; submits one `frozon-iss-ingest-cog:v2` worker per
+   remaining date. Also runs a retention sweep first, keeping the
+   `RETAIN_DAYS` most recent date folders and pruning the rest.
+2. **Worker** (`ingest_cog.py`) — re-runs CMR for its single
+   `mosaic_date`, downloads all matching granules via earthaccess
+   (HTTPS+EDL), mosaics them with `gdalwarp` to EPSG:3413, runs
+   `gdal_translate -of COG` under `GDAL_CACHEMAX`, validates, builds
+   a STAC item via `rio_stac`, uploads to `<prefix>/<collection>/YYYY/MM/DD/<file>`,
+   and emits `output/stac/catalog.json`.
 
 ### Zarr pipeline flow
 1. **Orchestrator** (`pipeline_zarr.py`) — submits a **single** worker job
@@ -151,7 +149,8 @@ Zarr: S3 inputs → worker (download existing Zarr → fresh/append/rebuild
 ## Project Structure
 
 ### Core files
-- `src/pipeline_cog.py`   — COG orchestrator
+- `scripts/submit_cog_pipeline.py` — COG orchestration runs HERE now
+  (in the GH Actions runner, not a MAAP container)
 - `src/ingest_cog.py`     — COG worker
 - `src/pipeline_zarr.py`  — Zarr orchestrator (single-job submitter)
 - `src/ingest_zarr.py`    — Zarr worker (fresh/append/rebuild dispatch)
@@ -167,7 +166,6 @@ Zarr: S3 inputs → worker (download existing Zarr → fresh/append/rebuild
   - `__init__.py`    — `make_source(args)` factory + `ensure_edl_login`
 
 ### MAAP configs
-- `.maap/cog-pipeline/`  — build + run for the COG orchestrator
 - `.maap/ingest-cog/`    — build + run for the COG worker
 - `.maap/zarr-pipeline/` — build + run for the Zarr orchestrator
 - `.maap/ingest-zarr/`   — build + run for the Zarr worker

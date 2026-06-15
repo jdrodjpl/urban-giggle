@@ -46,10 +46,12 @@ Safety guardrails to bake in:
 
 ## Scheduled runs
 
-Run the COG pipeline (and eventually the Zarr pipeline) on a daily cron.
-MAAP DPS itself doesn't expose a cron UI, so do it externally:
+✅ Daily COG cron: `.github/workflows/daily-cog-ingest.yml` +
+   `scripts/submit_cog_pipeline.py`.
 
-- GitHub Actions workflow on a cron schedule that calls
-  `maap.submitJob(algo_id="frozon-iss-cog-pipeline", ...)` via `maap-py`.
-- Auth via MAAP token stored as a repo secret.
-- Compute the daily `input_s3_prefix` (likely date-partitioned) at submit time.
+Still to do for the Zarr pipeline: equivalent GH Actions workflow that
+calls `maap.submitJob(algo_id="frozon-iss-ingest-zarr", ...)` (the
+existing `daily-zarr-ingest.yml` submits the orchestrator algo, which
+shares the maap-py-installation pattern the COG side outgrew — worth
+revisiting if the Zarr orchestrator image ever hits the same MAAP
+runtime caching issues we saw on the COG side).

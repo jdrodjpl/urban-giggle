@@ -1,8 +1,0 @@
-pystac
-pystac-client
-fsspec
-boto3
-backoff
-aiohttp
-maap-py
-earthaccess

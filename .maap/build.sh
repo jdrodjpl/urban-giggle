@@ -11,7 +11,7 @@ set -euo pipefail
 
 basedir=$( cd "$(dirname "$0")" ; pwd -P )
 
-for algo in ingest-cog cog-pipeline ingest-zarr zarr-pipeline; do
+for algo in ingest-cog ingest-zarr zarr-pipeline; do
     req="${basedir}/${algo}/requirements.txt"
     if [[ -f "${req}" ]]; then
         echo "==> Installing ${algo} deps from ${req}"

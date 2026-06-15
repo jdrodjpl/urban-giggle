@@ -12,42 +12,20 @@ S3 TIFF input(s) → COG (gdal_translate, low-memory) → S3 upload → STAC cat
 ```
 
 ### Components
-- **frozon-iss-ingest-cog** — per-TIFF DPS worker. Downloads, runs
-  `gdal_translate -of COG` with a `GDAL_CACHEMAX` cap, validates, uploads,
-  emits a STAC catalog.
-- **frozon-iss-cog-pipeline** — orchestrator. Resolves the input set
-  (single S3 URL or S3 prefix listing), submits one worker job per TIFF,
-  awaits completion, then upserts STAC into MMGIS.
+- **frozon-iss-ingest-cog** — per-acquisition-day DPS worker. Re-queries
+  CMR for its date, downloads via EDL, mosaics multi-UTM granules to
+  EPSG:3413 with `gdalwarp`, runs `gdal_translate -of COG`, uploads
+  the COG, and emits a STAC catalog.
+- **GH Actions cron** (`scripts/submit_cog_pipeline.py`) — runs daily.
+  Discovers acquisition dates via per-day CMR `.hits()`, drops the
+  newest plus any below-threshold partial dates, pre-checks S3, and
+  submits one worker per missing complete date. Also runs a retention
+  sweep that keeps the N most recent date folders in S3.
 
 ## Usage
 
-### Single S3 TIFF
-
-```bash
-python src/pipeline_cog.py \
-  --input-s3 "s3://source-bucket/path/file.tif" \
-  --collection-id "C123456789-FROZON" \
-  --s3-bucket "target-bucket" \
-  --s3-prefix "data/cogs" \
-  --role-arn "arn:aws:iam::123456789:role/S3AccessRole" \
-  --cmss-logger-host "https://logger.example.com" \
-  --mmgis-host "https://mmgis.example.com" \
-  --titiler-token-secret-name "mmgis-token" \
-  --job-queue "maap-dps-czdt-worker-8gb"
-```
-
-### S3 Prefix (batch)
-
-```bash
-python src/pipeline_cog.py \
-  --input-s3-prefix "s3://source-bucket/path/" \
-  --filter "*ssha*.tif" \
-  --collection-id "C123456789-FROZON" \
-  --s3-bucket "target-bucket" \
-  --s3-prefix "data/cogs" \
-  --role-arn "arn:aws:iam::123456789:role/S3AccessRole" \
-  --job-queue "maap-dps-czdt-worker-8gb"
-```
+The cron is the production path. For manual triggers see
+`.github/workflows/daily-cog-ingest.yml` (workflow_dispatch).
 
 ### Worker (direct, local or DPS)
 
@@ -83,16 +61,17 @@ conda activate ingest
 
 ## MAAP Deployment
 
-Two algorithms register as separate MAAP DPS configs:
+One algorithm registers with MAAP DPS:
 
 | Algorithm | Build / run | YAML |
 |---|---|---|
-| `frozon-iss-ingest-cog` | `.maap/ingest-cog/` | `.maap/sample-algo-configs/frozon-iss-ingest-cog.yml` |
-| `frozon-iss-cog-pipeline` | `.maap/cog-pipeline/` | `.maap/sample-algo-configs/frozon-iss-cog-pipeline.yml` |
+| `frozon-iss-ingest-cog:v2` | `.maap/ingest-cog/` | `.maap/sample-algo-configs/frozon-iss-ingest-cog.yml` |
 
-The orchestrator submits jobs against `algo_id="frozon-iss-ingest-cog"`,
-matching the worker's algorithm name. Both target the
-`maap-dps-czdt-worker-8gb` queue by default.
+The GH Actions cron submits jobs against `algo_id="frozon-iss-ingest-cog"`
+on the `maap-dps-worker-32vcpu-64gb` queue (full-Arctic daily mosaics
+need the high-vCPU/RAM worker). The orchestrator-as-DPS-job that used
+to live under `.maap/cog-pipeline/` has been retired; orchestration
+runs directly in the GH Actions runner now.
 
 ## Output Products
 
