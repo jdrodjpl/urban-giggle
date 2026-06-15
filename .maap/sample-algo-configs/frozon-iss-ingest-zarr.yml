@@ -2,7 +2,7 @@ algorithm_description: Frozon ISS Zarr Ingest Worker — builds or upserts a spa
 algorithm_name: frozon-iss-ingest-zarr
 algorithm_version: v3
 build_command: urban-giggle/.maap/ingest-zarr/build.sh
-disk_space: 200GB
+disk_space: 500GB
 docker_container_url: mas.maap-project.org/root/maap-workspaces/custom_images/maap_base:v4.2.0
 inputs:
   config: []
