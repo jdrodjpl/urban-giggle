@@ -44,7 +44,10 @@ DEFAULTS = {
     # Output.
     "COLLECTION_ID":                "frozon-rtc-s1-vh-daily",
     "S3_BUCKET":                    "maap-ops-workspace",
-    "S3_PREFIX":                    "frozon/cogs/",
+    # Inside the user's MAAP workspace namespace so the runner can use
+    # maap-py's workspace_bucket_credentials() (which only authorize
+    # the `jdrodrig/...` prefix) for both retention and worker output.
+    "S3_PREFIX":                    "jdrodrig/frozon/cogs/",
     # Filename / discovery.
     "FILTER":                       "*VH*.tif",
     "TIME_REGEX":                   r"_(?P<start_date>\d{8}T\d{6})Z_",
@@ -153,47 +156,24 @@ def discover_acquisition_dates(maap: MAAP) -> list[str]:
 
 def _maap_s3_client(maap: MAAP):
     """Return a boto3 S3 client authorized via maap-py's workspace
-    bucket credentials. Avoids managing AWS access keys directly in
-    GH Actions secrets — the runner already has MAAP_PGT, and MAAP
-    knows how to vend short-lived credentials for the workspace
-    bucket.
+    bucket credentials. The runner already has MAAP_PGT, and MAAP
+    vends short-lived credentials valid for the user's workspace
+    prefix (e.g. s3://maap-ops-workspace/jdrodrig/*).
     """
     import boto3
 
-    # maap-py exposes the workspace credentials API; the exact attribute
-    # path has varied across versions. Try the known shapes in order.
-    creds = None
-    for path in ("aws.workspace_bucket_credentials", "workspace_bucket_credentials"):
-        target = maap
-        try:
-            for attr in path.split("."):
-                target = getattr(target, attr)
-            creds = target() if callable(target) else target
-            if creds:
-                break
-        except AttributeError:
-            continue
-
-    if not creds:
+    response = maap.aws.workspace_bucket_credentials()
+    creds = response.get("credentials") if isinstance(response, dict) else None
+    if not creds or "aws_access_key_id" not in creds:
         raise RuntimeError(
-            "Could not obtain workspace-bucket credentials from maap-py. "
-            "Check that maap.aws.workspace_bucket_credentials() exists "
-            "in your installed maap-py version."
+            f"Unexpected shape from workspace_bucket_credentials(): {response!r}"
         )
-
-    # Normalize key casing — maap-py has historically returned both
-    # accessKeyId-style and aws_access_key_id-style dicts.
-    def pick(d, *keys):
-        for k in keys:
-            if k in d:
-                return d[k]
-        raise KeyError(f"None of {keys} present in workspace credentials")
 
     return boto3.client(
         "s3",
-        aws_access_key_id=pick(creds, "accessKeyId", "aws_access_key_id", "AccessKeyId"),
-        aws_secret_access_key=pick(creds, "secretAccessKey", "aws_secret_access_key", "SecretAccessKey"),
-        aws_session_token=pick(creds, "sessionToken", "aws_session_token", "SessionToken"),
+        aws_access_key_id=creds["aws_access_key_id"],
+        aws_secret_access_key=creds["aws_secret_access_key"],
+        aws_session_token=creds["aws_session_token"],
     )
 
 
