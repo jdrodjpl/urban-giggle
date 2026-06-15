@@ -1,0 +1,52 @@
+name: Daily S1 GRD HH+HV ingest
+
+on:
+  schedule:
+    # 06:30 UTC — 15-min offset from the OPERA COG cron (which fires at 06:15)
+    # to space out MAAP DPS queue contention while both pipelines coexist.
+    # After OPERA is retired (task #33) this offset can stay or move to
+    # 06:15 directly.
+    - cron: "30 6 * * *"
+  workflow_dispatch:
+    inputs:
+      lookback_days:
+        description: "CMR temporal lookback. Runner walks back day-by-day."
+        default: "30"
+      mosaic_last_n_complete_days:
+        description: "How many recent complete dates to mosaic per run."
+        default: "7"
+      min_granule_fraction:
+        description: "Drop any candidate date below this fraction of the max granule count."
+        default: "0.5"
+      retain_days:
+        description: "Keep the N most recent acquisition-date folders in S3."
+        default: "7"
+      collection_id:
+        description: "STAC collection / S3 folder for the daily COGs."
+        default: "frozon-s1-ew-hh-daily"
+
+jobs:
+  submit:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+
+      - name: Install dependencies
+        # earthaccess for CMR; boto3 for S3 retention; maap-py for submitJob
+        # + workspace credentials.
+        run: pip install maap-py earthaccess boto3
+
+      - name: Discover dates, prune old COGs, submit S1 GRD worker jobs
+        env:
+          MAAP_TOKEN: ${{ secrets.MAAP_TOKEN }}
+          MAAP_HOST: "api.maap-project.org"
+          LOOKBACK_DAYS: ${{ github.event.inputs.lookback_days || '30' }}
+          MOSAIC_LAST_N_COMPLETE_DAYS: ${{ github.event.inputs.mosaic_last_n_complete_days || '7' }}
+          MIN_GRANULE_FRACTION: ${{ github.event.inputs.min_granule_fraction || '0.5' }}
+          RETAIN_DAYS: ${{ github.event.inputs.retain_days || '7' }}
+          COLLECTION_ID: ${{ github.event.inputs.collection_id || 'frozon-s1-ew-hh-daily' }}
+        run: python scripts/submit_s1grd_pipeline.py

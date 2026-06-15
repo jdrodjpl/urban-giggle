@@ -1,0 +1,89 @@
+algorithm_description: Frozon Sentinel-1 GRD HH+HV ingest worker — downloads SAFE ZIPs from ASF, applies σ⁰ calibration, geocodes via GCPs to EPSG:3413, mosaics into a daily COG, uploads to S3 with STAC.
+algorithm_name: frozon-iss-ingest-s1grd
+algorithm_version: v1
+build_command: urban-giggle/.maap/ingest-s1grd/build.sh
+disk_space: 200GB
+docker_container_url: mas.maap-project.org/root/maap-workspaces/custom_images/maap_base:v4.2.0
+inputs:
+  config: []
+  file: []
+  positional:
+  - default: ""
+    description: JSON list of ASF datapool ZIP URLs to ingest into one daily mosaic (populated by runner).
+    name: input_https_urls
+    required: false
+  - default: ""
+    description: Comma-separated list of CMR collection short_names to query (e.g. "SENTINEL-1A_DP_GRD_MEDIUM,SENTINEL-1C_DP_GRD_MEDIUM"). Triggers CMR-self-query mode in the worker; alternative to input_https_urls for huge URL lists.
+    name: cmr_short_names
+    required: false
+  - default: ""
+    description: CMR temporal start (ISO date — narrowed to the mosaic date).
+    name: cmr_temporal_start
+    required: false
+  - default: ""
+    description: CMR temporal end (ISO date — day after mosaic date).
+    name: cmr_temporal_end
+    required: false
+  - default: ""
+    description: CMR bbox 'west,south,east,north' (e.g. -180,60,180,90 for Arctic).
+    name: cmr_bbox
+    required: false
+  - default: "*_1SDH_*"
+    description: Glob filter applied to CMR granule names. Default keeps only HH+HV dual-pol (mode code 1SDH).
+    name: filter
+    required: false
+  - default: "HH"
+    description: Polarization band to ingest (HH, HV, VV, VH).
+    name: polarization
+    required: false
+  - default: ""
+    description: YYYYMMDD used to name the daily mosaic output and stamp its STAC datetime.
+    name: mosaic_date
+    required: true
+  - default: ""
+    description: MAAP secret name holding an EDL bearer token. User must have authorized the "Alaska Satellite Facility Data Access" application on their EDL profile for ASF downloads to work.
+    name: earthdata_token_secret_name
+    required: true
+  - default: ""
+    description: STAC collection ID (also names the output COG file).
+    name: collection_id
+    required: true
+  - default: ""
+    description: Target S3 bucket for the COG output.
+    name: s3_bucket
+    required: true
+  - default: ""
+    description: Optional S3 prefix within the output bucket.
+    name: s3_prefix
+    required: false
+  - default: ""
+    description: AWS IAM Role ARN to assume for S3 write (optional — defaults to worker's identity).
+    name: role_arn
+    required: false
+  - default: DEFLATE
+    description: COG compression method (DEFLATE, LZW, JPEG, WEBP, NONE).
+    name: compress
+    required: false
+  - default: "512"
+    description: COG tile block size (256, 512, 1024).
+    name: blocksize
+    required: false
+  - default: "4096"
+    description: GDAL_CACHEMAX in MB for the COG conversion subprocess.
+    name: max_memory
+    required: false
+  - default: nearest
+    description: Resampling method for base data (nearest, bilinear, cubic, average).
+    name: resampling
+    required: false
+  - default: average
+    description: Resampling method for overviews (nearest, average, cubic, mode).
+    name: overview_resampling
+    required: false
+  - default: "false"
+    description: Overwrite existing COG output in S3.
+    name: overwrite
+    required: false
+queue: maap-dps-worker-32vcpu-64gb
+repository_url: https://github.com/jdrodjpl/urban-giggle.git
+run_command: urban-giggle/.maap/ingest-s1grd/run-ingest-s1grd.sh
