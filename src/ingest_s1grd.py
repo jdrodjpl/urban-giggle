@@ -105,11 +105,18 @@ def cmr_granule_urls(
 # --------------------------------------------------------------------------
 
 def download_granule_via_asf(url: str, dest_dir: Path,
-                              edl_token: str) -> Path:
-    """Download one SAFE ZIP via asf_search. Returns the local path."""
+                              edl_creds: dict) -> Path:
+    """Download one SAFE ZIP via asf_search. `edl_creds` is either
+    {"token": "..."} or {"username": "...", "password": "..."} —
+    whichever shape `_resolve_edl_creds` produced from the MAAP secret.
+    Returns the local path."""
     import asf_search
 
-    session = asf_search.ASFSession().auth_with_token(edl_token)
+    session = asf_search.ASFSession()
+    if "token" in edl_creds:
+        session.auth_with_token(edl_creds["token"])
+    else:
+        session.auth_with_creds(edl_creds["username"], edl_creds["password"])
     dest_dir.mkdir(parents=True, exist_ok=True)
     local = dest_dir / os.path.basename(url.split("?", 1)[0])
     asf_search.download_url(url, path=str(dest_dir), session=session)
@@ -165,20 +172,26 @@ def process_granule(zip_path: Path, work_dir: Path,
 # Entry point
 # --------------------------------------------------------------------------
 
-def _resolve_edl_token(secret_name: str, maap_instance=None) -> str:
-    """Pull the EDL bearer token from a MAAP secret. Token-only format:
-    either single-line `token=...` or just the raw token string."""
+def _resolve_edl_creds(secret_name: str, maap_instance=None) -> dict:
+    """Pull EDL credentials from a MAAP secret. Returns either
+    `{"token": "..."}` for a token-format secret or
+    `{"username": "...", "password": "..."}` for the two-line
+    username/password format. Both work with asf_search.
+    """
     maap = maap_instance or MaapUtils.get_maap_instance()
     secret = maap.secrets.get_secret(secret_name)
     body = secret if isinstance(secret, str) else secret.get("value", "")
     lines = [ln for ln in body.splitlines() if ln.strip()]
+
     if body.strip().startswith("token="):
-        return body.split("=", 1)[-1].strip()
+        return {"token": body.split("=", 1)[-1].strip()}
     if len(lines) == 1 and "=" not in lines[0]:
-        return lines[0].strip()
+        return {"token": lines[0].strip()}
+    if len(lines) >= 2:
+        return {"username": lines[0].strip(), "password": lines[1].strip()}
     raise RuntimeError(
-        f"S1 GRD worker needs a token-format EDL secret. {secret_name!r} "
-        f"doesn't look like one (first line: {lines[0][:30] if lines else '<empty>'})."
+        f"EDL secret {secret_name!r} format not recognized "
+        f"(first line: {lines[0][:30] if lines else '<empty>'})."
     )
 
 
@@ -227,7 +240,8 @@ def main() -> int:
     zip_dir = work_dir / "zips"
 
     maap = MaapUtils.get_maap_instance()
-    edl_token = _resolve_edl_token(args.earthdata_token_secret_name, maap)
+    edl_creds = _resolve_edl_creds(args.earthdata_token_secret_name, maap)
+    logger.info(f"EDL auth via {'token' if 'token' in edl_creds else 'username/password'}")
 
     # --- 1. Resolve granule URLs ---
     if args.input_https_urls:
@@ -256,7 +270,7 @@ def main() -> int:
     geocoded: List[Path] = []
     for i, url in enumerate(urls, 1):
         logger.info(f"[{i}/{len(urls)}] {os.path.basename(url.split('?',1)[0])}")
-        zip_path = download_granule_via_asf(url, zip_dir, edl_token)
+        zip_path = download_granule_via_asf(url, zip_dir, edl_creds)
         try:
             geo_tiff = process_granule(zip_path, work_dir, args.polarization)
             geocoded.append(geo_tiff)
