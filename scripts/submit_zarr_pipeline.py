@@ -40,14 +40,16 @@ DEFAULTS = {
     # extra headroom is welcome on first-build runs (7 × 25 GiB COGs
     # staged to local disk + Zarr write).
     "QUEUE":                     "maap-dps-worker-32vcpu-64gb",
-    # Source COGs we sync FROM.
+    # Source COGs we sync FROM — now the Sentinel-1 EW HH+HV product
+    # (previously: frozon-rtc-s1-vh-daily, OPERA VH IW). Old OPERA
+    # collection is being retired; see PIPELINE_TEMPLATE.md gotchas.
     "COG_S3_BUCKET":             "maap-ops-workspace",
     "COG_S3_PREFIX":             "jdrodrig/frozon/cogs/",
-    "COG_COLLECTION_ID":         "frozon-rtc-s1-vh-daily",
+    "COG_COLLECTION_ID":         "frozon-s1-ew-hh-daily",
     # Zarr we sync TO.
     "ZARR_S3_BUCKET":            "maap-ops-workspace",
     "ZARR_S3_PREFIX":            "jdrodrig/frozon/zarrs/",
-    "ZARR_COLLECTION_ID":        "frozon-rtc-s1-vh-zarr",
+    "ZARR_COLLECTION_ID":        "frozon-s1-ew-hh-zarr",
     # Worker tuning.
     "CHUNK_SIZE":                "1024",
     # The COG filename contains the acquisition date as `_YYYYMMDD_daily_COG`,

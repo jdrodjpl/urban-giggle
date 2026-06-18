@@ -11,10 +11,10 @@ on:
     inputs:
       zarr_collection_id:
         description: "Zarr collection / STAC id (also names the Zarr store)."
-        default: "frozon-rtc-s1-vh-zarr"
+        default: "frozon-s1-ew-hh-zarr"
       cog_collection_id:
         description: "Source COG collection id (under jdrodrig/frozon/cogs/)."
-        default: "frozon-rtc-s1-vh-daily"
+        default: "frozon-s1-ew-hh-daily"
 
 jobs:
   submit:
@@ -36,6 +36,6 @@ jobs:
         env:
           MAAP_TOKEN: ${{ secrets.MAAP_TOKEN }}
           MAAP_HOST: "api.maap-project.org"
-          ZARR_COLLECTION_ID: ${{ github.event.inputs.zarr_collection_id || 'frozon-rtc-s1-vh-zarr' }}
-          COG_COLLECTION_ID: ${{ github.event.inputs.cog_collection_id || 'frozon-rtc-s1-vh-daily' }}
+          ZARR_COLLECTION_ID: ${{ github.event.inputs.zarr_collection_id || 'frozon-s1-ew-hh-zarr' }}
+          COG_COLLECTION_ID: ${{ github.event.inputs.cog_collection_id || 'frozon-s1-ew-hh-daily' }}
         run: python scripts/submit_zarr_pipeline.py
