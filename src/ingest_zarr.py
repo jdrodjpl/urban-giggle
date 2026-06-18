@@ -217,10 +217,27 @@ def append_in_place(local_zarr: Path, new_tiffs: List[Path],
     existing = xr.open_zarr(str(local_zarr), consolidated=False, decode_times=True)
     grid_x = existing.coords['x'].values
     grid_y = existing.coords['y'].values
-    resolution = float(existing.attrs['resolution'])
-    grid_west = float(existing.attrs['bounds_west'])
-    grid_north = float(existing.attrs['bounds_north'])
     existing.close()
+
+    # Prefer attrs read via direct zarr API (xr.open_zarr can miss zarr-v3
+    # root attrs in some env combos); fall back to deriving from coords if
+    # the attrs are genuinely absent. bzss writes coord convention as
+    # x_coords[0] = bounds_west (left edge), y_coords[0] = bounds_north (top).
+    attrs = zarr_io.read_existing_zarr_attrs(local_zarr)
+    if all(k in attrs for k in ('resolution', 'bounds_west', 'bounds_north')):
+        resolution = float(attrs['resolution'])
+        grid_west = float(attrs['bounds_west'])
+        grid_north = float(attrs['bounds_north'])
+    else:
+        resolution = abs(float(grid_x[1] - grid_x[0])) if len(grid_x) > 1 \
+            else abs(float(grid_y[1] - grid_y[0]))
+        grid_west = float(grid_x[0])
+        grid_north = float(grid_y[0])
+        logger.warning(
+            f"append_in_place: existing Zarr at {local_zarr} missing root attrs; "
+            f"derived resolution={resolution}, west={grid_west}, north={grid_north} "
+            f"from coords"
+        )
 
     grid_height = len(grid_y)
     grid_width = len(grid_x)
@@ -473,19 +490,21 @@ def build_or_upsert(args: argparse.Namespace,
 
 def read_zarr_summary(local_zarr: Path) -> Tuple[dict, datetime, datetime]:
     """Pull bounds + time range from the just-written store for the STAC item."""
+    bounds_dict = zarr_io.read_existing_zarr_bounds(local_zarr)
+    if not bounds_dict:
+        raise RuntimeError(f"Could not derive bounds from {local_zarr}")
+    bounds = {
+        'west': bounds_dict['west'],
+        'south': bounds_dict['south'],
+        'east': bounds_dict['east'],
+        'north': bounds_dict['north'],
+        'crs': bounds_dict['crs'],
+    }
+
     try:
         store = zarr.open_consolidated(str(local_zarr), mode='r')
     except (KeyError, ValueError):
         store = zarr.open(str(local_zarr), mode='r')
-
-    attrs = dict(store.attrs)
-    bounds = {
-        'west': float(attrs['bounds_west']),
-        'south': float(attrs['bounds_south']),
-        'east': float(attrs['bounds_east']),
-        'north': float(attrs['bounds_north']),
-        'crs': attrs['crs'],
-    }
     times = store['time'][:]
     finite = times[~np.isnat(times)] if times.dtype.kind == 'M' else times
     if len(finite) == 0:

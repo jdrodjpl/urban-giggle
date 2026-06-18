@@ -134,19 +134,42 @@ def read_existing_zarr_attrs(local_path: Path) -> Dict:
 
 def read_existing_zarr_bounds(local_path: Path) -> Optional[Dict]:
     """Return `{west, south, east, north, resolution, crs}` from the store
-    attrs that build_zarr_sparse_streaming wrote, or None if absent."""
+    attrs that build_zarr_sparse_streaming wrote, falling back to
+    coord-derived values when attrs are absent."""
     attrs = read_existing_zarr_attrs(local_path)
     required = ('bounds_west', 'bounds_south', 'bounds_east', 'bounds_north',
                 'resolution', 'crs')
-    if not all(k in attrs for k in required):
+    if all(k in attrs for k in required):
+        return {
+            'west': float(attrs['bounds_west']),
+            'south': float(attrs['bounds_south']),
+            'east': float(attrs['bounds_east']),
+            'north': float(attrs['bounds_north']),
+            'resolution': float(attrs['resolution']),
+            'crs': attrs['crs'],
+        }
+    # Coord-derived fallback. bzss convention:
+    #   x_coords[0] = bounds_west,  x_coords[-1]+res = bounds_east
+    #   y_coords[0] = bounds_north, y_coords[-1]-res = bounds_south
+    try:
+        store = zarr.open_consolidated(str(local_path), mode='r')
+    except (KeyError, ValueError):
+        store = zarr.open(str(local_path), mode='r')
+    try:
+        x_coords = np.asarray(store['x'])
+        y_coords = np.asarray(store['y'])
+    except KeyError:
         return None
+    if len(x_coords) < 2 or len(y_coords) < 2:
+        return None
+    resolution = abs(float(x_coords[1] - x_coords[0]))
     return {
-        'west': float(attrs['bounds_west']),
-        'south': float(attrs['bounds_south']),
-        'east': float(attrs['bounds_east']),
-        'north': float(attrs['bounds_north']),
-        'resolution': float(attrs['resolution']),
-        'crs': attrs['crs'],
+        'west': float(x_coords[0]),
+        'east': float(x_coords[-1]) + resolution,
+        'north': float(y_coords[0]),
+        'south': float(y_coords[-1]) - resolution,
+        'resolution': resolution,
+        'crs': attrs.get('crs', 'EPSG:3413'),
     }
 
 
@@ -181,14 +204,26 @@ def dump_zarr_slices_to_tiffs(
         store = zarr.open(str(local_zarr), mode='r')
 
     attrs = dict(store.attrs)
-    west = float(attrs['bounds_west'])
-    north = float(attrs['bounds_north'])
-    resolution = float(attrs['resolution'])
-    crs = attrs['crs']
-
     data = store['data']
     times = store['time'][:]
     n = data.shape[0]
+
+    # bzss writes resolution/bounds_*/crs as root attrs. When those are
+    # missing (Zarr built via a code path that didn't persist root attrs
+    # in a way zarr.open can see), fall back to deriving from the coord
+    # arrays — bzss's convention is x[0] = bounds_west, y[0] = bounds_north.
+    x_coords = np.asarray(store['x'])
+    y_coords = np.asarray(store['y'])
+    if all(k in attrs for k in ('bounds_west', 'bounds_north', 'resolution')):
+        west = float(attrs['bounds_west'])
+        north = float(attrs['bounds_north'])
+        resolution = float(attrs['resolution'])
+    else:
+        west = float(x_coords[0])
+        north = float(y_coords[0])
+        resolution = abs(float(x_coords[1] - x_coords[0])) if len(x_coords) > 1 \
+            else abs(float(y_coords[1] - y_coords[0]))
+    crs = attrs.get('crs', 'EPSG:3413')
 
     transform = from_origin(west, north, resolution, resolution)
     written: List[Path] = []
