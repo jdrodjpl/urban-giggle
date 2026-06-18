@@ -43,7 +43,14 @@ import pystac
 
 import cog_helpers  # reuse mosaic_tiffs / convert_to_cog_lowmem / build_stac_item / ...
 from common_utils import AWSUtils, MaapUtils, LoggingUtils
-from s1_calibration import calibrate_granule
+from s1_calibration import (
+    read_uncalib_dn,
+    find_calibration_xml,
+    parse_calibration_lut,
+    apply_calibration,
+    write_calibrated_tiff,
+    LUT_ELEMENT_BY_CALIBRATION,
+)
 
 logger = logging.getLogger("ingest_s1grd")
 logging.basicConfig(level=logging.INFO,
@@ -159,24 +166,43 @@ def reproject_to_3413(in_tiff: Path, out_tiff: Path,
 
 
 def process_granule(zip_path: Path, work_dir: Path,
-                    polarization: str = "HH") -> Path:
-    """Calibrate + reproject one downloaded SAFE ZIP. Returns the path
-    of the reprojected EPSG:3413 σ⁰ TIFF, ready to mosaic."""
+                    polarization: str = "HH",
+                    calibrations: tuple = ("sigma0",)) -> dict:
+    """Calibrate + reproject one downloaded SAFE ZIP for each requested
+    calibration. Returns `{calibration: geocoded_tiff_path}`.
+
+    DN is read once from the SAFE bundle; the LUT and pixel-wise
+    application run once per calibration. Each calibration becomes a
+    separate intermediate TIFF and gets gdalwarp'd independently. The
+    intermediate calibrated TIFFs are unlinked after warping to keep
+    disk usage bounded — only the geocoded outputs remain.
+    """
     cal_dir = work_dir / "calibrated"
     geo_dir = work_dir / "geocoded"
 
-    cal_tiff = cal_dir / f"{zip_path.stem}_{polarization.upper()}_sigma0.tif"
-    calibrate_granule(zip_path, polarization, cal_tiff)
+    # Read DN + GCPs once (this is the expensive disk I/O).
+    dn, gcps, _, _ = read_uncalib_dn(zip_path, polarization)
+    cal_xml = find_calibration_xml(zip_path, polarization.lower())
 
-    geo_tiff = geo_dir / f"{zip_path.stem}_{polarization.upper()}_3413.tif"
-    reproject_to_3413(cal_tiff, geo_tiff)
+    geocoded: dict = {}
+    for cal in calibrations:
+        cal_tiff = cal_dir / f"{zip_path.stem}_{polarization.upper()}_{cal}.tif"
+        geo_tiff = geo_dir / f"{zip_path.stem}_{polarization.upper()}_{cal}_3413.tif"
 
-    # Free the intermediate calibrated TIFF — it's ~1-2 GiB.
-    try:
-        cal_tiff.unlink()
-    except OSError:
-        pass
-    return geo_tiff
+        lines, pixels, lut = parse_calibration_lut(zip_path, cal_xml, cal)
+        calibrated = apply_calibration(dn, lines, pixels, lut)
+        write_calibrated_tiff(calibrated, gcps, cal_tiff)
+
+        reproject_to_3413(cal_tiff, geo_tiff)
+        # Intermediate calibrated TIFF is ~1-2 GiB; drop it now that
+        # gdalwarp has produced the geocoded EPSG:3413 version.
+        try:
+            cal_tiff.unlink()
+        except OSError:
+            pass
+        geocoded[cal] = geo_tiff
+
+    return geocoded
 
 
 # --------------------------------------------------------------------------
@@ -231,7 +257,17 @@ def main() -> int:
     p.add_argument("--earthdata-token-secret-name", required=True,
                    help="MAAP secret holding the EDL bearer token")
 
-    p.add_argument("--collection-id", required=True)
+    p.add_argument("--calibrations", default="sigma0",
+                   help="Comma-separated list of calibration conventions to emit "
+                        "(any of sigma0, beta0, gamma0). Each produces its own "
+                        "per-day mosaic COG in its own collection. Default sigma0 only.")
+    p.add_argument("--collection-id-template",
+                   help="Collection-id template where {calibration} is substituted, "
+                        "e.g. 'frozon-s1-ew-hh-{calibration}-daily'. Required when "
+                        "--calibrations names more than one convention.")
+    p.add_argument("--collection-id",
+                   help="Single collection id. Used only when --calibrations is a "
+                        "single convention; ignored otherwise.")
     p.add_argument("--s3-bucket", required=True)
     p.add_argument("--s3-prefix", default="")
     p.add_argument("--role-arn")
@@ -288,66 +324,118 @@ def main() -> int:
         raise RuntimeError("No S1 GRD granule URLs to process")
     logger.info(f"{len(urls)} granule(s) to process")
 
-    # --- 2. Per-granule download → calibrate → reproject ---
-    # Process one at a time and unlink the ZIP after to keep disk usage bounded.
-    geocoded: List[Path] = []
+    # Resolve calibrations and their per-cal collection-ids.
+    calibrations = tuple(c.strip() for c in args.calibrations.split(",") if c.strip())
+    unknown = [c for c in calibrations if c not in LUT_ELEMENT_BY_CALIBRATION]
+    if unknown:
+        raise ValueError(
+            f"Unknown calibration(s) {unknown}; "
+            f"valid: {list(LUT_ELEMENT_BY_CALIBRATION)}"
+        )
+    if len(calibrations) > 1:
+        if not args.collection_id_template:
+            raise ValueError(
+                "Multi-calibration requires --collection-id-template "
+                "(e.g. 'frozon-s1-ew-hh-{calibration}-daily')"
+            )
+        collection_ids = {
+            c: args.collection_id_template.format(calibration=c)
+            for c in calibrations
+        }
+    else:
+        # Single calibration — either template OR --collection-id literal.
+        if args.collection_id_template:
+            collection_ids = {
+                calibrations[0]: args.collection_id_template.format(calibration=calibrations[0])
+            }
+        elif args.collection_id:
+            collection_ids = {calibrations[0]: args.collection_id}
+        else:
+            raise ValueError(
+                "Need either --collection-id-template or --collection-id "
+                "for single-calibration runs."
+            )
+    logger.info(f"Calibrations to emit: {calibrations}")
+    for cal, cid in collection_ids.items():
+        logger.info(f"  {cal} → {cid}")
+
+    # --- 2. Per-granule download → calibrate (each cal) → reproject (each cal) ---
+    # Process one ZIP at a time, unlink after, and collect per-calibration
+    # geocoded tiffs in parallel lists.
+    geocoded_by_cal: dict = {c: [] for c in calibrations}
     for i, url in enumerate(urls, 1):
         logger.info(f"[{i}/{len(urls)}] {os.path.basename(url.split('?',1)[0])}")
         zip_path = download_granule_via_asf(url, zip_dir, edl_creds)
         try:
-            geo_tiff = process_granule(zip_path, scratch_dir, args.polarization)
-            geocoded.append(geo_tiff)
+            results = process_granule(
+                zip_path, scratch_dir, args.polarization,
+                calibrations=calibrations,
+            )
+            for cal, path in results.items():
+                geocoded_by_cal[cal].append(path)
         finally:
             try:
                 zip_path.unlink()
             except OSError:
                 pass
 
-    if not geocoded:
-        raise RuntimeError("No granules survived calibration / geocoding")
-    logger.info(f"{len(geocoded)} granule(s) geocoded to EPSG:3413; mosaicking")
-
-    # --- 3. Mosaic all per-granule TIFFs into one daily raster ---
-    mosaic_path = scratch_dir / f"{args.collection_id}_{args.mosaic_date}_daily.tif"
-    cog_helpers.mosaic_tiffs(geocoded, mosaic_path,
-                             target_crs="EPSG:3413",
-                             target_res=40.0,
-                             nodata=float("nan"))
-
-    # --- 4. COG conversion (reuse) ---
-    cog_path = scratch_dir / f"{args.collection_id}_{args.mosaic_date}_daily_COG.tif"
-    ok, msg = cog_helpers.convert_to_cog_lowmem(
-        input_file=mosaic_path,
-        output_file=cog_path,
-        overwrite=True,
-        compress=args.compress,
-        blocksize=args.blocksize,
-        max_memory_mb=args.max_memory,
-        resampling=args.resampling,
-        overview_resampling=args.overview_resampling,
+    for cal, geocoded in geocoded_by_cal.items():
+        if not geocoded:
+            raise RuntimeError(f"No granules survived for calibration {cal}")
+    logger.info(
+        f"{len(geocoded_by_cal[calibrations[0]])} granule(s) per calibration "
+        f"geocoded to EPSG:3413; mosaicking each."
     )
-    if not ok:
-        raise RuntimeError(f"COG conversion failed: {msg}")
-    logger.info(f"COG: {cog_path}  ({cog_path.stat().st_size / 1e9:.1f} GiB)")
 
-    # --- 5. STAC item ---
-    item = cog_helpers.build_stac_item(cog_path, args.collection_id)
-    dt = datetime.strptime(args.mosaic_date, "%Y%m%d").replace(tzinfo=timezone.utc)
-    item.datetime = dt
-
-    # --- 6. S3 upload ---
-    s3_key = cog_helpers.build_dated_s3_key(
-        args.s3_prefix, args.collection_id, item.datetime, cog_path.name,
-    )
-    s3_url = cog_helpers.upload_cog_to_key(
-        cog_path, args.s3_bucket, s3_key, args.role_arn,
-    )
-    item.assets["asset"].href = s3_url
-    logger.info(f"uploaded → {s3_url}")
-
-    # --- 7. STAC catalog (the one artifact persisted to output/) ---
+    # --- 3-7. Per-calibration: mosaic → COG → upload → STAC. ---
     stac_dir = out_dir / "stac"
-    cog_helpers.write_stac_catalog(item, args.collection_id, stac_dir)
+    dt = datetime.strptime(args.mosaic_date, "%Y%m%d").replace(tzinfo=timezone.utc)
+    for cal in calibrations:
+        cid = collection_ids[cal]
+        geocoded = geocoded_by_cal[cal]
+        logger.info(f"=== calibration {cal} ({cid}) ===")
+
+        mosaic_path = scratch_dir / f"{cid}_{args.mosaic_date}_daily.tif"
+        cog_helpers.mosaic_tiffs(geocoded, mosaic_path,
+                                 target_crs="EPSG:3413",
+                                 target_res=40.0,
+                                 nodata=float("nan"))
+
+        cog_path = scratch_dir / f"{cid}_{args.mosaic_date}_daily_COG.tif"
+        ok, msg = cog_helpers.convert_to_cog_lowmem(
+            input_file=mosaic_path,
+            output_file=cog_path,
+            overwrite=True,
+            compress=args.compress,
+            blocksize=args.blocksize,
+            max_memory_mb=args.max_memory,
+            resampling=args.resampling,
+            overview_resampling=args.overview_resampling,
+        )
+        if not ok:
+            raise RuntimeError(f"COG conversion failed for {cal}: {msg}")
+        logger.info(f"COG ({cal}): {cog_path}  ({cog_path.stat().st_size / 1e9:.1f} GiB)")
+
+        item = cog_helpers.build_stac_item(cog_path, cid)
+        item.datetime = dt
+        s3_key = cog_helpers.build_dated_s3_key(
+            args.s3_prefix, cid, item.datetime, cog_path.name,
+        )
+        s3_url = cog_helpers.upload_cog_to_key(
+            cog_path, args.s3_bucket, s3_key, args.role_arn,
+        )
+        item.assets["asset"].href = s3_url
+        logger.info(f"uploaded ({cal}) → {s3_url}")
+
+        cog_helpers.write_stac_catalog(item, cid, stac_dir / cal)
+
+        # Drop the mosaic + COG now that they're in S3. Frees ~10-20 GiB
+        # before the next calibration starts its mosaic.
+        for p in (mosaic_path, cog_path):
+            try:
+                p.unlink()
+            except OSError:
+                pass
     logger.info(f"STAC catalog → {stac_dir}/catalog.json")
 
     # Heavy intermediates (zips/calibrated/geocoded/mosaic/COG) live in scratch/,

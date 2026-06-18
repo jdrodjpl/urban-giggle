@@ -45,6 +45,8 @@ filter_pattern=""
 polarization="HH"
 mosaic_date=""
 earthdata_token_secret_name=""
+calibrations="sigma0"
+collection_id_template=""
 collection_id="" s3_bucket="" s3_prefix="" role_arn=""
 compress="DEFLATE" blocksize="512" max_memory="4096"
 resampling="nearest" overview_resampling="average" overwrite="false"
@@ -87,6 +89,8 @@ fi
 args+=(--polarization "${polarization}")
 [[ -n "${mosaic_date}" ]]           && args+=(--mosaic-date "${mosaic_date}")
 [[ -n "${earthdata_token_secret_name}" ]] && args+=(--earthdata-token-secret-name "${earthdata_token_secret_name}")
+[[ -n "${calibrations}" ]]          && args+=(--calibrations "${calibrations}")
+[[ -n "${collection_id_template}" ]] && args+=(--collection-id-template "${collection_id_template}")
 [[ -n "${collection_id}" ]]         && args+=(--collection-id "${collection_id}")
 [[ -n "${s3_bucket}" ]]             && args+=(--s3-bucket "${s3_bucket}")
 [[ -n "${s3_prefix}" ]]             && args+=(--s3-prefix "${s3_prefix}")

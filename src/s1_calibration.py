@@ -2,19 +2,23 @@
 
 GDAL's SAFE driver exposes the raw DN ("UNCALIB") subdatasets but
 doesn't apply σ⁰ / β⁰ / γ⁰ calibration for GRD products in any current
-version. This module applies σ⁰ ourselves from the calibration LUT in
-the SAFE bundle:
+GDAL version. This module applies them ourselves from the per-pixel
+calibration LUT in the SAFE annotation XML:
 
-    σ⁰(i,j) = DN(i,j)² / k(i,j)²
+    calibrated(i,j) = DN(i,j)² / k(i,j)²
 
-where k(i,j) is the `sigmaNought` value from the calibration vector
-grid, bilinearly interpolated to every pixel.
+where k(i,j) is the relevant calibration value (`sigmaNought`,
+`betaNought`, `gamma`, …) interpolated bilinearly from the
+calibration vector grid. The formula is identical across conventions;
+only the LUT differs. See ESA's Sentinel-1 Product Specification
+Section 9.2.
 
-Output is linear σ⁰ (Float32). NaN for pixels where the input was 0
-(no signal / off-swath).
+Each calibration writes a separate Float32 GeoTIFF; NaN for pixels
+where DN was 0 (no signal / off-swath). The output preserves the
+SAFE driver's GCPs so a downstream gdalwarp can geocode it.
 
 References:
-- ESA Sentinel-1 Product Specification, Section 9.2 (calibration)
+- ESA Sentinel-1 Product Specification, Section 9.2
 - https://sentinels.copernicus.eu/web/sentinel/radiometric-calibration-of-level-1-products
 """
 
@@ -48,16 +52,37 @@ def find_calibration_xml(zip_path: Path, polarization: str) -> str:
     )
 
 
-def parse_sigma_lut(zip_path: Path, calibration_xml_path: str) -> Tuple[
+# Mapping from the canonical short-name we accept on the CLI to the
+# actual element name in the calibration XML's <calibrationVector>.
+# Add gamma / dn here if a consumer ever needs them.
+LUT_ELEMENT_BY_CALIBRATION = {
+    "sigma0": "sigmaNought",
+    "beta0":  "betaNought",
+    "gamma0": "gamma",
+}
+
+
+def parse_calibration_lut(zip_path: Path, calibration_xml_path: str,
+                          calibration: str = "sigma0") -> Tuple[
     np.ndarray, np.ndarray, np.ndarray,
 ]:
-    """Read the σ⁰ calibration LUT from `calibration_xml_path` inside
-    the SAFE ZIP. Returns (lines, pixels, sigmaNought) where:
-      - lines: 1-D array of length L (image row coords of LUT samples)
-      - pixels: 1-D array of length P (image col coords; assumed
-        constant across all LUT rows for GRD products)
-      - sigmaNought: 2-D array of shape (L, P) (k(i,j) calibration values)
+    """Read one calibration LUT from `calibration_xml_path` inside the
+    SAFE ZIP. `calibration` is one of `sigma0` / `beta0` / `gamma0`.
+
+    Returns `(lines, pixels, lut)`:
+      - lines: 1-D array of length L (image row coords of LUT samples).
+      - pixels: 1-D array of length P (image col coords; for GRD this is
+        constant across all LUT rows, so we read it from the first row).
+      - lut: 2-D array of shape (L, P) — k(i,j) values for the chosen
+        calibration convention.
     """
+    if calibration not in LUT_ELEMENT_BY_CALIBRATION:
+        raise ValueError(
+            f"Unknown calibration {calibration!r}; "
+            f"valid: {list(LUT_ELEMENT_BY_CALIBRATION)}"
+        )
+    element = LUT_ELEMENT_BY_CALIBRATION[calibration]
+
     with zipfile.ZipFile(str(zip_path)) as zf:
         xml_bytes = zf.read(calibration_xml_path)
 
@@ -70,29 +95,29 @@ def parse_sigma_lut(zip_path: Path, calibration_xml_path: str) -> Tuple[
 
     lines = np.array([int(v.find("line").text) for v in vectors])
     pixels = np.array([int(x) for x in vectors[0].find("pixel").text.split()])
-    sigma = np.array([
-        [float(x) for x in v.find("sigmaNought").text.split()]
+    lut = np.array([
+        [float(x) for x in v.find(element).text.split()]
         for v in vectors
     ])
-    if sigma.shape != (len(lines), len(pixels)):
+    if lut.shape != (len(lines), len(pixels)):
         raise RuntimeError(
-            f"Calibration LUT shape mismatch: lines={len(lines)}, "
-            f"pixels={len(pixels)}, sigma={sigma.shape}"
+            f"Calibration LUT shape mismatch for {calibration}: "
+            f"lines={len(lines)}, pixels={len(pixels)}, lut={lut.shape}"
         )
-    return lines, pixels, sigma
+    return lines, pixels, lut
 
 
-def apply_sigma0(dn: np.ndarray, lines: np.ndarray, pixels: np.ndarray,
-                 sigma_lut: np.ndarray) -> np.ndarray:
-    """Apply σ⁰ calibration to a 2-D DN array using the parsed LUT.
+def apply_calibration(dn: np.ndarray, lines: np.ndarray, pixels: np.ndarray,
+                      lut: np.ndarray) -> np.ndarray:
+    """Apply DN²/k² calibration to a 2-D DN array using the parsed LUT.
 
-    Interpolates the LUT bilinearly to every pixel, then computes
-    σ⁰ = DN² / k². DN values of 0 map to NaN (no-signal / off-swath).
-    Returns a Float32 array of the same shape as `dn`.
+    The formula is identical across σ⁰ / β⁰ / γ⁰ conventions — only
+    the LUT (`k`) differs. DN values of 0 map to NaN (no-signal /
+    off-swath). Returns a Float32 array of the same shape as `dn`.
     """
     height, width = dn.shape
     interp = RegularGridInterpolator(
-        (lines, pixels), sigma_lut,
+        (lines, pixels), lut,
         method="linear", bounds_error=False, fill_value=None,
     )
     yy, xx = np.meshgrid(np.arange(height), np.arange(width), indexing="ij")
@@ -100,31 +125,32 @@ def apply_sigma0(dn: np.ndarray, lines: np.ndarray, pixels: np.ndarray,
     return np.where(dn > 0, (dn ** 2) / (k ** 2), np.nan).astype(np.float32)
 
 
-def calibrate_granule(zip_path: Path, polarization: str,
-                      output_path: Path,
-                      swath: str = "EW") -> Path:
-    """Read a single S1 GRD granule's DN band via GDAL's SAFE driver,
-    apply σ⁰ calibration, and write a Float32 GeoTIFF with the original
-    GCPs preserved (so gdalwarp can reproject it).
+def read_uncalib_dn(zip_path: Path, polarization: str,
+                    swath: str = "EW") -> Tuple[np.ndarray, tuple, int, int]:
+    """Open the SAFE bundle's UNCALIB subdataset for `polarization`,
+    read the raw DN band, and return `(dn, gcps, height, width)`.
 
-    `polarization` is "HH" / "HV" / "VV" / "VH". `swath` is "EW" / "IW".
+    Separated so callers that need multiple calibrations off the same
+    granule only pay the GDAL open + read cost once.
     """
     uncalib_uri = (
         f"SENTINEL1_CALIB:UNCALIB:/vsizip/{zip_path}/"
         f"{zip_path.stem}.SAFE/manifest.safe:"
         f"{swath}_{polarization.upper()}:AMPLITUDE"
     )
-
     with rasterio.open(uncalib_uri) as src:
         dn = src.read(1).astype(np.float32)
         gcps = src.gcps  # (list_of_GCP, CRS)
         height, width = src.shape
+    return dn, gcps, height, width
 
-    cal_xml = find_calibration_xml(zip_path, polarization.lower())
-    lines, pixels, sigma_lut = parse_sigma_lut(zip_path, cal_xml)
-    sigma0 = apply_sigma0(dn, lines, pixels, sigma_lut)
 
+def write_calibrated_tiff(values: np.ndarray, gcps: tuple,
+                          output_path: Path) -> Path:
+    """Write a Float32 GeoTIFF that preserves the source's GCPs so a
+    downstream gdalwarp can geocode it."""
     output_path.parent.mkdir(parents=True, exist_ok=True)
+    height, width = values.shape
     profile = {
         "driver": "GTiff",
         "dtype": "float32",
@@ -138,7 +164,32 @@ def calibrate_granule(zip_path: Path, polarization: str,
         "blockysize": 512,
     }
     with rasterio.open(str(output_path), "w", **profile) as dst:
-        dst.write(sigma0, 1)
+        dst.write(values, 1)
         dst.gcps = (gcps[0], gcps[1])
-
     return output_path
+
+
+def calibrate_granule(zip_path: Path, polarization: str,
+                      output_path: Path,
+                      calibration: str = "sigma0",
+                      swath: str = "EW") -> Path:
+    """Single-calibration convenience wrapper — opens DN, parses LUT,
+    applies, writes. For multi-calibration runs (e.g. σ⁰ AND β⁰ off
+    the same granule) use `read_uncalib_dn` + `parse_calibration_lut` +
+    `apply_calibration` + `write_calibrated_tiff` directly so the
+    DN read happens only once.
+    """
+    dn, gcps, _, _ = read_uncalib_dn(zip_path, polarization, swath=swath)
+    cal_xml = find_calibration_xml(zip_path, polarization.lower())
+    lines, pixels, lut = parse_calibration_lut(zip_path, cal_xml, calibration)
+    calibrated = apply_calibration(dn, lines, pixels, lut)
+    return write_calibrated_tiff(calibrated, gcps, output_path)
+
+
+# Backward-compat aliases for any caller still using the σ⁰-only API.
+def parse_sigma_lut(zip_path: Path, calibration_xml_path: str):
+    return parse_calibration_lut(zip_path, calibration_xml_path, "sigma0")
+
+
+def apply_sigma0(dn, lines, pixels, sigma_lut):
+    return apply_calibration(dn, lines, pixels, sigma_lut)

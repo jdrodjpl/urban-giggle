@@ -32,14 +32,20 @@ from maap.maap import MAAP
 DEFAULTS = {
     "MAAP_HOST":                    "api.maap-project.org",
     "WORKER_ALGO_ID":               "frozon-iss-ingest-s1grd",
-    "WORKER_ALGO_VERSION":          "v1",
+    "WORKER_ALGO_VERSION":          "v2",
     "QUEUE":                        "maap-dps-worker-32vcpu-64gb",
     # CMR query — both active S1 satellites.
     "CMR_SHORT_NAMES":              "SENTINEL-1A_DP_GRD_MEDIUM,SENTINEL-1C_DP_GRD_MEDIUM",
     "CMR_BBOX":                     "-180,60,180,90",
     "EDL_SECRET_NAME":              "earthdata-token-frozon",
-    # Output.
-    "COLLECTION_ID":                "frozon-s1-ew-hh-daily",
+    # Output. With multiple calibrations, the worker resolves the per-cal
+    # collection_id from COLLECTION_ID_TEMPLATE by substituting
+    # {calibration}. The legacy single-collection COLLECTION_ID is only
+    # used for retention + S3 pre-check (pinned to the σ⁰ collection
+    # since that's the canonical "do we already have this date" check).
+    "CALIBRATIONS":                 "sigma0,beta0",
+    "COLLECTION_ID_TEMPLATE":       "frozon-s1-ew-hh-{calibration}-daily",
+    "COLLECTION_ID":                "frozon-s1-ew-hh-sigma0-daily",
     "S3_BUCKET":                    "maap-ops-workspace",
     "S3_PREFIX":                    "jdrodrig/frozon/cogs/",
     # Filter — keep only HH+HV dual-pol granules (mode code 1SDH).
@@ -234,7 +240,8 @@ def submit_worker(maap: MAAP, date_key: str):
         "polarization":                 env("POLARIZATION"),
         "mosaic_date":                  date_key,
         "earthdata_token_secret_name":  env("EDL_SECRET_NAME"),
-        "collection_id":                env("COLLECTION_ID"),
+        "calibrations":                 env("CALIBRATIONS"),
+        "collection_id_template":       env("COLLECTION_ID_TEMPLATE"),
         "s3_bucket":                    env("S3_BUCKET"),
         "s3_prefix":                    env("S3_PREFIX"),
         "compress":                     env("COMPRESS"),

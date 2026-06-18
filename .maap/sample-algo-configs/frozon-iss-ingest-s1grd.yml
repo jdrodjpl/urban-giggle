@@ -1,6 +1,6 @@
-algorithm_description: Frozon Sentinel-1 GRD HH+HV ingest worker — downloads SAFE ZIPs from ASF, applies σ⁰ calibration, geocodes via GCPs to EPSG:3413, mosaics into a daily COG, uploads to S3 with STAC.
+algorithm_description: Frozon Sentinel-1 GRD HH+HV ingest worker — downloads SAFE ZIPs from ASF, applies σ⁰ AND β⁰ calibration (or any subset), geocodes via GCPs to EPSG:3413, mosaics into one daily COG per calibration, uploads to S3 with STAC.
 algorithm_name: frozon-iss-ingest-s1grd
-algorithm_version: v1
+algorithm_version: v2
 build_command: urban-giggle/.maap/ingest-s1grd/build.sh
 disk_space: 200GB
 docker_container_url: mas.maap-project.org/root/maap-workspaces/custom_images/maap_base:v4.2.0
@@ -44,10 +44,18 @@ inputs:
     description: MAAP secret name holding an EDL bearer token. User must have authorized the "Alaska Satellite Facility Data Access" application on their EDL profile for ASF downloads to work.
     name: earthdata_token_secret_name
     required: true
+  - default: "sigma0"
+    description: Comma-separated list of calibration conventions to emit (sigma0,beta0,gamma0). Each produces its own per-day mosaic COG in its own collection.
+    name: calibrations
+    required: false
   - default: ""
-    description: STAC collection ID (also names the output COG file).
+    description: Collection-id template where {calibration} is substituted (e.g. "frozon-s1-ew-hh-{calibration}-daily"). Required when calibrations names more than one convention.
+    name: collection_id_template
+    required: false
+  - default: ""
+    description: Single collection ID — used only when calibrations is a single value AND collection_id_template is not set. Backward-compat for single-calibration runs.
     name: collection_id
-    required: true
+    required: false
   - default: ""
     description: Target S3 bucket for the COG output.
     name: s3_bucket
