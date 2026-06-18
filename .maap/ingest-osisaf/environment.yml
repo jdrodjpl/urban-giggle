@@ -4,6 +4,10 @@ channels:
 dependencies:
   - python>=3.11
   - gdal
+  # conda-forge GDAL 3.9+ ships format drivers as separate plugin packages;
+  # the netCDF driver (gdal_netCDF.so) is NOT pulled in by `gdal` alone and
+  # is required to read the OSI SAF NetCDF subdatasets.
+  - libgdal-netcdf
   - rasterio
   - numpy
   - pystac

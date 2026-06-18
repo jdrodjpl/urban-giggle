@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Build script for the OSI SAF sea-ice ingest worker.
-# BUILD_BUST=2026-06-18-1  ← bump to force a fresh Docker build.
+# BUILD_BUST=2026-06-18-2  ← bump to force a fresh Docker build.
 #
 # Leaner env than the OPERA/S1 workers: OSI SAF is anonymous HTTP (no
 # earthaccess/asf-search/EDL) and NetCDF-direct via GDAL (no scipy
@@ -36,10 +36,14 @@ if [[ ! -x "${INGEST_ENV_PREFIX}/bin/python" ]]; then
 fi
 
 # Smoke import — everything the worker + reused ingest_cog helpers touch.
+# Assert the netCDF GDAL driver is present: conda-forge GDAL 3.9+ ships it as
+# a separate plugin (libgdal-netcdf), and without it rasterio.open() on the
+# OSI SAF NETCDF:"...":var subdatasets fails at runtime.
 "${INGEST_ENV_PREFIX}/bin/python" -c "
 import rasterio, numpy, pystac, rio_stac, boto3, requests
 from osgeo import gdal
-print('deps OK')
+assert gdal.GetDriverByName('netCDF') is not None, 'netCDF GDAL driver missing — libgdal-netcdf not installed'
+print('deps OK; netCDF driver present')
 "
 
 {
