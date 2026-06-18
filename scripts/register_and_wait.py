@@ -6,15 +6,15 @@ build state instead of guessing from the registration response.
 
 Usage (from a MAAP notebook or shell with maap-py installed):
 
-    # Register all three algos:
+    # Register all three workers:
     python scripts/register_and_wait.py \\
-        .maap/sample-algo-configs/frozon-iss-ingest-cog.yml \\
-        .maap/sample-algo-configs/frozon-iss-zarr-pipeline.yml \\
+        .maap/sample-algo-configs/frozon-iss-ingest-s1grd.yml \\
+        .maap/sample-algo-configs/frozon-iss-ingest-osisaf.yml \\
         .maap/sample-algo-configs/frozon-iss-ingest-zarr.yml
 
-    # Or just the COG worker after a code change:
+    # Or just one worker after a code change:
     python scripts/register_and_wait.py \\
-        .maap/sample-algo-configs/frozon-iss-ingest-cog.yml
+        .maap/sample-algo-configs/frozon-iss-ingest-s1grd.yml
 
 Exits non-zero if any build fails. Use with `&&` to chain a submit:
 

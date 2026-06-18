@@ -9,7 +9,7 @@ Pipeline per granule:
 
 Then for all granules in the day:
 
-  4. Mosaic the per-granule EPSG:3413 TIFFs (reused from ingest_cog).
+  4. Mosaic the per-granule EPSG:3413 TIFFs (reused from cog_helpers).
   5. Convert to COG (reused).
   6. Build STAC item, upload to S3 (reused).
 
@@ -41,7 +41,7 @@ from typing import List, Optional
 
 import pystac
 
-import ingest_cog  # reuse mosaic_tiffs / convert_to_cog_lowmem / build_stac_item / ...
+import cog_helpers  # reuse mosaic_tiffs / convert_to_cog_lowmem / build_stac_item / ...
 from common_utils import AWSUtils, MaapUtils, LoggingUtils
 from s1_calibration import calibrate_granule
 
@@ -309,14 +309,14 @@ def main() -> int:
 
     # --- 3. Mosaic all per-granule TIFFs into one daily raster ---
     mosaic_path = scratch_dir / f"{args.collection_id}_{args.mosaic_date}_daily.tif"
-    ingest_cog.mosaic_tiffs(geocoded, mosaic_path,
+    cog_helpers.mosaic_tiffs(geocoded, mosaic_path,
                              target_crs="EPSG:3413",
                              target_res=40.0,
                              nodata=float("nan"))
 
     # --- 4. COG conversion (reuse) ---
     cog_path = scratch_dir / f"{args.collection_id}_{args.mosaic_date}_daily_COG.tif"
-    ok, msg = ingest_cog.convert_to_cog_lowmem(
+    ok, msg = cog_helpers.convert_to_cog_lowmem(
         input_file=mosaic_path,
         output_file=cog_path,
         overwrite=True,
@@ -331,15 +331,15 @@ def main() -> int:
     logger.info(f"COG: {cog_path}  ({cog_path.stat().st_size / 1e9:.1f} GiB)")
 
     # --- 5. STAC item ---
-    item = ingest_cog.build_stac_item(cog_path, args.collection_id)
+    item = cog_helpers.build_stac_item(cog_path, args.collection_id)
     dt = datetime.strptime(args.mosaic_date, "%Y%m%d").replace(tzinfo=timezone.utc)
     item.datetime = dt
 
     # --- 6. S3 upload ---
-    s3_key = ingest_cog.build_dated_s3_key(
+    s3_key = cog_helpers.build_dated_s3_key(
         args.s3_prefix, args.collection_id, item.datetime, cog_path.name,
     )
-    s3_url = ingest_cog.upload_cog_to_key(
+    s3_url = cog_helpers.upload_cog_to_key(
         cog_path, args.s3_bucket, s3_key, args.role_arn,
     )
     item.assets["asset"].href = s3_url
@@ -347,7 +347,7 @@ def main() -> int:
 
     # --- 7. STAC catalog (the one artifact persisted to output/) ---
     stac_dir = out_dir / "stac"
-    ingest_cog.write_stac_catalog(item, args.collection_id, stac_dir)
+    cog_helpers.write_stac_catalog(item, args.collection_id, stac_dir)
     logger.info(f"STAC catalog → {stac_dir}/catalog.json")
 
     # Heavy intermediates (zips/calibrated/geocoded/mosaic/COG) live in scratch/,

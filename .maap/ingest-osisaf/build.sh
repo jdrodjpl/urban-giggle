@@ -35,7 +35,7 @@ if [[ ! -x "${INGEST_ENV_PREFIX}/bin/python" ]]; then
     exit 1
 fi
 
-# Smoke import — everything the worker + reused ingest_cog helpers touch.
+# Smoke import — everything the worker + reused cog_helpers touch.
 # Assert the netCDF GDAL driver is present: conda-forge GDAL 3.9+ ships it as
 # a separate plugin (libgdal-netcdf), and without it rasterio.open() on the
 # OSI SAF NETCDF:"...":var subdatasets fails at runtime.

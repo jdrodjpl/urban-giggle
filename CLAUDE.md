@@ -27,82 +27,75 @@ conda env update -f environment.yml
 conda activate ingest
 ```
 
-### Local development (COG)
-```bash
-# Worker, single file
-python src/ingest_cog.py --input-tiff path/to/file.tif \
-  --collection-id C123-FROZON --s3-bucket bucket --role-arn arn:...
+### Local development (per-source worker)
+Each worker takes the same general shape — a CMR / source-specific
+input flag plus collection / S3 / token options. Example (S1 GRD):
 
-# Worker, HTTPS+EDL input (Earthdata-protected)
-python src/ingest_cog.py --input-https https://... \
+```bash
+python src/ingest_s1grd.py --input-https-urls '["https://..."]' \
+  --mosaic-date 20260615 --polarization HH \
   --earthdata-token-secret-name earthdata-token-frozon \
-  --collection-id C123-FROZON --s3-bucket bucket --role-arn arn:...
-
-# Orchestration runs in the GH Actions cron, not as a MAAP algo.
-# See scripts/submit_cog_pipeline.py for the discovery + submit logic.
+  --collection-id frozon-s1-ew-hh-daily \
+  --s3-bucket maap-ops-workspace --s3-prefix jdrodrig/frozon/cogs/
 ```
 
-### Local development (Zarr)
-```bash
-# Worker, batch of TIFFs from S3
-python src/ingest_zarr.py --input-s3-prefix s3://bucket/prefix/ \
-  --collection-id frozon-timeseries --s3-bucket bucket --role-arn arn:...
-
-# Orchestrator
-python src/pipeline_zarr.py --input-s3-prefix s3://bucket/prefix/ \
-  --collection-id frozon-timeseries --s3-bucket bucket --role-arn arn:... \
-  --job-queue maap-dps-worker-16gb
-```
+Orchestration lives in `scripts/submit_<source>_pipeline.py` (runs from
+GH Actions, not MAAP). The worker scripts above just process one
+acquisition date at a time.
 
 ### MAAP execution
 ```bash
-.maap/ingest-cog/run-ingest-cog.sh        # COG worker (per-acquisition-day)
-.maap/zarr-pipeline/run-zarr-pipeline.sh  # Zarr orchestrator
-.maap/ingest-zarr/run-ingest-zarr.sh      # Zarr worker (batch)
+.maap/ingest-s1grd/run-ingest-s1grd.sh    # S1 GRD HH+HV worker (per acquisition date)
+.maap/ingest-osisaf/run-ingest-osisaf.sh  # OSI-SAF worker
+.maap/ingest-zarr/run-ingest-zarr.sh      # Zarr sync worker (used by Zarr cron)
 ```
 
-The COG orchestrator that used to live at `.maap/cog-pipeline/` has been
-retired. Daily COG runs are kicked off from `.github/workflows/daily-cog-ingest.yml`
-which runs `scripts/submit_cog_pipeline.py` in a GH Actions runner — that
-script does the CMR discovery, drop-newest + threshold filtering, S3
-pre-check, and `maap.submitJob()` calls directly. Worker stays registered
-on MAAP as `frozon-iss-ingest-cog:v2`.
+Each pipeline follows the same shape: a GH Actions cron does discovery
++ filtering + submitJob, then one MAAP DPS worker job runs per
+acquisition date. The orchestrator-as-DPS-job pattern was retired
+(MAAP's runtime kept serving stale orchestrator images regardless of
+how many fresh builds we pushed — see PIPELINE_TEMPLATE.md gotchas).
 
 ## Architecture
 
-### COG pipeline flow
-1. **GH Actions cron** (`scripts/submit_cog_pipeline.py`) — runs daily at
-   06:15 UTC. Logs into EDL via the `earthdata-token-frozon` MAAP secret;
+### General pipeline flow (applies to S1 GRD, OSI-SAF, and any future source)
+1. **GH Actions cron** (`scripts/submit_<source>_pipeline.py`) — runs
+   daily. Authenticates via the `earthdata-token-frozon` MAAP secret;
    walks back day-by-day querying CMR for granule counts; drops the
    newest date (still landing) plus any date below `MIN_GRANULE_FRACTION`
    of the max count in the window; pre-checks S3 to skip dates whose
-   COG already exists; submits one `frozon-iss-ingest-cog:v2` worker per
-   remaining date. Also runs a retention sweep first, keeping the
+   COG already exists; submits one `frozon-iss-ingest-<source>:vN` worker
+   per remaining date. Also runs a retention sweep first, keeping the
    `RETAIN_DAYS` most recent date folders and pruning the rest.
-2. **Worker** (`ingest_cog.py`) — re-runs CMR for its single
-   `mosaic_date`, downloads all matching granules via earthaccess
-   (HTTPS+EDL), mosaics them with `gdalwarp` to EPSG:3413, runs
-   `gdal_translate -of COG` under `GDAL_CACHEMAX`, validates, builds
-   a STAC item via `rio_stac`, uploads to `<prefix>/<collection>/YYYY/MM/DD/<file>`,
-   and emits `output/stac/catalog.json`.
+2. **Worker** (`ingest_<source>.py`) — downloads source granules, applies
+   any source-specific processing (calibration, reprojection, ZIP
+   unwrapping…), uses `cog_helpers.mosaic_tiffs` + `convert_to_cog_lowmem`
+   to build a per-day mosaic COG, then `upload_cog_to_key` + `write_stac_catalog`
+   to land it in S3 at `<prefix>/<collection>/YYYY/MM/DD/<file>`.
 
-### Zarr pipeline flow
-1. **Orchestrator** (`pipeline_zarr.py`) — submits a **single** worker job
-   (concurrent Zarr writes would race) against
-   `algo_id="frozon-iss-ingest-zarr"`, awaits it, then catalogs the
-   `data` asset into MMGIS using the shared catalog-orchestration module.
-2. **Worker** (`ingest_zarr.py`) — dispatches one of three modes based on
-   existing-Zarr presence and bounds compatibility:
-   - **fresh**: no remote Zarr — build from scratch via the streaming
-     script.
-   - **append**: remote Zarr exists and its bounds contain all new inputs —
-     `xarray.to_zarr(mode='a', append_dim='time')` in place.
-   - **rebuild**: remote exists but new inputs extend beyond it — dump
-     existing slices back to TIFFs (timestamps stamped onto mtime via
-     `os.utime`), merge with new TIFFs, rebuild on the unioned grid.
+### Zarr sync flow
+The Zarr is a time-series mirror of one of the COG collections.
+1. **GH Actions cron** (`scripts/submit_zarr_pipeline.py`) — lists COG
+   dates under the source collection in S3, opens the existing Zarr's
+   `time` coord, computes the diff, submits a single worker job with
+   `--desired-dates` + `--input-s3-urls` (only the dates the Zarr
+   doesn't already have).
+2. **Worker** (`ingest_zarr.py`, `sync_zarr` mode) — opens the existing
+   Zarr if any, dumps the kept slices to TIFFs, then streams the new
+   COGs in one at a time: download → append → unlink. Final write goes
+   to a local Zarr, then uploaded to S3 atomically.
 3. Output lands at `s3://<bucket>/<prefix>/<collection>/<collection>.zarr/`.
-   STAC item id is `<collection-id>-timeseries` (stable across reruns); the
-   asset key is `data` with media-type `application/vnd+zarr`.
+   STAC item id is `<collection-id>-timeseries`; asset key is `data`
+   with media-type `application/vnd+zarr`.
+
+### Shared library (`src/cog_helpers.py`)
+Pulled out of the retired OPERA RTC worker. Every source-specific
+worker composes these:
+- `check_if_cog` / `get_file_info` — diagnostics.
+- `convert_to_cog_lowmem` — `gdal_translate -of COG` under a cache cap.
+- `mosaic_tiffs` — `gdalwarp` per-day mosaic to a target CRS.
+- `build_stac_item` / `build_dated_s3_key` / `write_stac_catalog` — STAC emit.
+- `upload_cog_to_key` — S3 upload.
 
 ### Input-source framework (`src/input_sources/`)
 - `base.InputRef` — one resolved input (url, name, `auth_kind`).
@@ -116,14 +109,6 @@ on MAAP as `frozon-iss-ingest-cog:v2`.
   username/password) from a MAAP secret and runs `earthaccess.login()`.
 - `login_from_maap_secret` lives in `cmr_tiff.py` for the underlying
   one-shot auth.
-
-### Catalog orchestration (`catalog_orchestration.py`)
-- Shared between COG and Zarr pipelines.
-- `catalog_products(args, maap, worker_jobs, primary_asset_keys)` —
-  iterates **every** worker's `stac_cat_files` (not just the first) so
-  multi-worker COG pipelines accrete via idempotent
-  `upsert_collection`. `primary_asset_keys` is `("asset",)` for COG
-  and `("data",)` for Zarr (the worker decides which key it uses).
 
 ### Key components
 - **AWS S3 integration** — `common_utils.AWSUtils` (download, upload, parse
@@ -149,14 +134,13 @@ Zarr: S3 inputs → worker (download existing Zarr → fresh/append/rebuild
 ## Project Structure
 
 ### Core files
-- `scripts/submit_cog_pipeline.py` — COG orchestration runs HERE now
-  (in the GH Actions runner, not a MAAP container)
-- `src/ingest_cog.py`     — COG worker
-- `src/pipeline_zarr.py`  — Zarr orchestrator (single-job submitter)
-- `src/ingest_zarr.py`    — Zarr worker (fresh/append/rebuild dispatch)
-- `src/zarr_io.py`        — Zarr store sync + bounds/slice helpers
+- `scripts/submit_<source>_pipeline.py` — runner cron, one per source
+- `src/ingest_<source>.py` — worker, one per source
+- `src/cog_helpers.py` — shared COG building (mosaic, convert, STAC, upload)
+- `src/s1_calibration.py` — S1 GRD σ⁰ calibration helpers
+- `src/ingest_zarr.py` — Zarr sync worker (one for all sources)
+- `src/zarr_io.py` — Zarr store sync + bounds/slice helpers
 - `src/build_zarr_sparse_streaming.py` — streaming Zarr builder (vendored)
-- `src/catalog_orchestration.py` — shared STAC/MMGIS upsert + webhook
 - `src/create_stac_items.py` — MMGIS upsert helpers
 - `src/common_utils.py` — shared AWS / MAAP / logging / argparse utilities
 - `src/input_sources/`  — pluggable input-source package
@@ -166,11 +150,11 @@ Zarr: S3 inputs → worker (download existing Zarr → fresh/append/rebuild
   - `__init__.py`    — `make_source(args)` factory + `ensure_edl_login`
 
 ### MAAP configs
-- `.maap/ingest-cog/`    — build + run for the COG worker
-- `.maap/zarr-pipeline/` — build + run for the Zarr orchestrator
-- `.maap/ingest-zarr/`   — build + run for the Zarr worker
-- `.maap/sample-algo-configs/*.yml` — register-able algorithm definitions
-  for all four algos.
+- `.maap/ingest-s1grd/`  — build + run for the Sentinel-1 GRD HH+HV worker
+- `.maap/ingest-osisaf/` — build + run for the OSI-SAF worker
+- `.maap/ingest-zarr/`   — build + run for the Zarr sync worker
+- `.maap/sample-algo-configs/*.yml` — register-able algorithm definitions.
+  See `PIPELINE_TEMPLATE.md` for the recipe to add another source.
 
 ## Important Implementation Details
 

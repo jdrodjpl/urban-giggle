@@ -25,6 +25,8 @@ Usage:
 import argparse
 import json
 import logging
+import os
+import re
 import signal
 import time
 from datetime import datetime, timezone
@@ -39,7 +41,11 @@ import rio_stac
 import zarr
 from maap.maap import MAAP
 
-import create_stac_items
+try:
+    import antimeridian
+except ImportError:
+    antimeridian = None
+
 
 logging.basicConfig(
     level=logging.INFO,
@@ -73,8 +79,8 @@ def load_config(config_path: str) -> dict:
         if src.get("stac_update"):
             if not cfg.get("mmgis_host"):
                 raise ValueError(f"{label}: stac_update requires mmgis_host in config")
-            if not cfg.get("mmgis_token_secret_name"):
-                raise ValueError(f"{label}: stac_update requires mmgis_token_secret_name in config")
+            if not os.environ.get("MMGIS_TOKEN"):
+                raise ValueError(f"{label}: stac_update requires MMGIS_TOKEN in the environment")
     return cfg
 
 
@@ -145,13 +151,14 @@ def build_zarr_prefix(s3_prefix: str, collection_id: str) -> str:
 # ---------------------------------------------------------------------------
 
 class SyncResult:
-    __slots__ = ("fetched", "pruned", "new_keys", "pruned_keys")
+    __slots__ = ("fetched", "pruned", "new_keys", "pruned_keys", "all_keys")
 
     def __init__(self):
         self.fetched: int = 0
         self.pruned: int = 0
         self.new_keys: Set[str] = set()
         self.pruned_keys: Set[str] = set()
+        self.all_keys: Set[str] = set()
 
 
 def sync_prefix(s3, bucket: str, prefix: str, local_dir: Path,
@@ -160,6 +167,7 @@ def sync_prefix(s3, bucket: str, prefix: str, local_dir: Path,
     result = SyncResult()
     objects = list_objects(s3, bucket, prefix)
     remote_keys = {obj["Key"] for obj in objects}
+    result.all_keys = remote_keys
 
     for obj in objects:
         key = obj["Key"]
@@ -205,10 +213,105 @@ def sync_prefix(s3, bucket: str, prefix: str, local_dir: Path,
 # STAC catalog helpers
 # ---------------------------------------------------------------------------
 
+ARCTIC_BBOX = [-180.0, 60.0, 180.0, 90.0]
+
+
+def _has_time_components(time_format: str) -> bool:
+    """True if the format includes hours/minutes/seconds tokens."""
+    return any(tok in time_format for tok in ("%H", "%I", "%M", "%S", "%T", "%f", "%p"))
+
+
+def _extract_datetime_from_filename(filename: str,
+                                    time_regex: Optional[str],
+                                    time_format: str) -> Optional[datetime]:
+    """Pull an acquisition datetime out of a filename.
+
+    Mirrors the dateline scripts' approach: try the Sentinel-1 pattern
+    first, then a user-supplied `time_regex` (using a `start_date` named
+    group or the first capture). Returns None if nothing matches.
+
+    Date-only formats (no %H/%M/%S in `time_format`) snap to noon UTC
+    instead of midnight so the value displays as the right day in
+    western-hemisphere timezones (UTC midnight rendered in PDT shows as
+    the previous evening)."""
+    sentinel = re.search(
+        r"S1[AB]_\w+_\w+_\w+_(\d{8}T\d{6})_(\d{8}T\d{6})", filename
+    )
+    if sentinel:
+        try:
+            return datetime.strptime(sentinel.group(1), "%Y%m%dT%H%M%S").replace(tzinfo=timezone.utc)
+        except ValueError:
+            pass
+    if time_regex:
+        m = re.search(time_regex, filename)
+        if m:
+            try:
+                date_str = m.groupdict().get("start_date")
+                if date_str is None and m.groups():
+                    date_str = m.group(1)
+                if date_str:
+                    dt = datetime.strptime(date_str, time_format)
+                    if not _has_time_components(time_format):
+                        dt = dt.replace(hour=12)
+                    return dt.replace(tzinfo=timezone.utc)
+            except ValueError:
+                pass
+    return None
+
+
+def _remap_path(host_path: Path, path_remove: Optional[str],
+                path_replace_with: Optional[str]) -> str:
+    """Apply the dateline-script style path remap: strip `path_remove` from
+    the host path and substitute `path_replace_with`. Used so STAC asset
+    hrefs match what the titiler container sees inside its bind mount.
+
+    Symlinks are NOT resolved when a remap is configured — the user's
+    `path_remove` is matched against the path as written (so e.g. the
+    `/home/mmgis/frozon-efs` symlink survives the substitution).
+
+    With no path_remove configured, returns the file:// URI of the
+    resolved host path."""
+    if path_remove:
+        s = str(host_path)
+        replacement = path_replace_with or ""
+        if s.startswith(path_remove):
+            return replacement + s[len(path_remove):]
+        return s.replace(path_remove, replacement, 1)
+    return host_path.resolve().as_uri()
+
+
+def _apply_antimeridian_fix(item: pystac.Item) -> None:
+    """In-place fix for geometries crossing ±180°. Recomputes bbox when
+    the antimeridian split turns the polygon into a MultiPolygon."""
+    if antimeridian is None:
+        log.warning("antimeridian package not installed — skipping fix")
+        return
+    if item.geometry is None:
+        return
+    fixed = antimeridian.fix_geojson(item.geometry)
+    item.geometry = fixed
+    if fixed.get("type") == "MultiPolygon":
+        coords = [c for poly in fixed["coordinates"] for ring in poly for c in ring]
+        lons = [c[0] for c in coords]
+        lats = [c[1] for c in coords]
+        item.bbox = [min(lons), min(lats), max(lons), max(lats)]
+
+
 def build_cog_stac_items(new_keys: Set[str], bucket: str,
                          cog_prefix: str, cog_dir: Path,
-                         collection_id: str) -> List[pystac.Item]:
-    """Build STAC items for newly downloaded COGs using rio_stac."""
+                         collection_id: str,
+                         path_remove: Optional[str] = None,
+                         path_replace_with: Optional[str] = None,
+                         fix_antimeridian: bool = True,
+                         arctic_bbox: bool = False,
+                         time_regex: Optional[str] = None,
+                         time_format: str = "%Y%m%dT%H%M%S") -> List[pystac.Item]:
+    """Build STAC items for newly downloaded COGs using rio_stac.
+
+    Path remapping (`path_remove` / `path_replace_with`) rewrites the host
+    file path to whatever titiler sees inside its container bind mount.
+    `time_regex` extracts an acquisition datetime from the filename so the
+    STAC item's `datetime` matches the data instead of "now"."""
     items = []
     for key in sorted(new_keys):
         if not key.lower().endswith((".tif", ".tiff")):
@@ -218,16 +321,31 @@ def build_cog_stac_items(new_keys: Set[str], bucket: str,
         if not local_path.exists():
             continue
         try:
+            asset_href = _remap_path(local_path, path_remove, path_replace_with)
+            input_dt = _extract_datetime_from_filename(
+                local_path.name, time_regex, time_format
+            )
+            if input_dt is None:
+                log.warning(
+                    f"{local_path.name}: no datetime extracted from filename "
+                    "— rio_stac will fall back to file metadata or 'now'"
+                )
             item = rio_stac.create_stac_item(
                 source=str(local_path),
                 id=local_path.stem,
                 collection=collection_id,
+                input_datetime=input_dt,
                 asset_name="asset",
+                asset_href=asset_href,
                 asset_media_type=pystac.MediaType.COG,
                 with_proj=True,
                 with_raster=True,
+                with_eo=True,
             )
-            item.assets["asset"].href = f"s3://{bucket}/{key}"
+            if fix_antimeridian:
+                _apply_antimeridian_fix(item)
+            if arctic_bbox:
+                item.bbox = list(ARCTIC_BBOX)
             items.append(item)
         except Exception as e:
             log.warning(f"Failed to build STAC item for {local_path.name}: {e}")
@@ -236,7 +354,11 @@ def build_cog_stac_items(new_keys: Set[str], bucket: str,
 
 def build_zarr_stac_item(zarr_dir: Path, bucket: str,
                          zarr_prefix: str,
-                         collection_id: str) -> Optional[pystac.Item]:
+                         collection_id: str,
+                         path_remove: Optional[str] = None,
+                         path_replace_with: Optional[str] = None,
+                         fix_antimeridian: bool = True,
+                         arctic_bbox: bool = False) -> Optional[pystac.Item]:
     """Build a single STAC item for a Zarr store from its attributes."""
     try:
         try:
@@ -280,7 +402,9 @@ def build_zarr_stac_item(zarr_dir: Path, bucket: str,
         min_dt = min(dt_values) if dt_values else datetime.now(timezone.utc)
         max_dt = max(dt_values) if dt_values else datetime.now(timezone.utc)
 
-        zarr_s3_url = f"s3://{bucket}/{zarr_prefix.rstrip('/')}/"
+        zarr_href = _remap_path(zarr_dir, path_remove, path_replace_with)
+        if not zarr_href.endswith("/"):
+            zarr_href += "/"
         item_id = f"{collection_id}-timeseries"
 
         item = pystac.Item(
@@ -295,11 +419,15 @@ def build_zarr_stac_item(zarr_dir: Path, bucket: str,
             },
         )
         item.add_asset("data", pystac.Asset(
-            href=zarr_s3_url,
+            href=zarr_href,
             media_type="application/vnd+zarr",
             roles=["data"],
             title=f"{collection_id} sparse Zarr time series",
         ))
+        if fix_antimeridian:
+            _apply_antimeridian_fix(item)
+        if arctic_bbox:
+            item.bbox = list(ARCTIC_BBOX)
         return item
 
     except Exception as e:
@@ -307,9 +435,24 @@ def build_zarr_stac_item(zarr_dir: Path, bucket: str,
         return None
 
 
-def upsert_stac(mmgis_host: str, mmgis_token: str,
+def _stac_headers(token: Optional[str]) -> Dict[str, str]:
+    h = {"Content-Type": "application/json", "Accept": "application/json"}
+    if token:
+        h["Authorization"] = f"Bearer {token}"
+    return h
+
+
+def upsert_stac(mmgis_host: str, mmgis_token: Optional[str],
                 collection_id: str, items: List[pystac.Item]) -> None:
-    """Build a pystac Collection from items and upsert into MMGIS."""
+    """Upsert a STAC collection + items into stac-fastapi.
+
+    Talks directly to the STAC API root (e.g. http://localhost:32775), using
+    the transaction-extension endpoints:
+      GET    /collections/{id}             — existence check
+      POST   /collections                  — create
+      PUT    /collections/{id}             — update extent
+      POST   /collections/{id}/bulk_items  — bulk upsert items
+    """
     if not items:
         return
 
@@ -344,17 +487,49 @@ def upsert_stac(mmgis_host: str, mmgis_token: str,
         ),
         license="proprietary",
     )
-    for item in items:
-        collection.add_item(item)
 
-    create_stac_items.upsert_collection(
-        mmgis_url=mmgis_host,
-        mmgis_token=mmgis_token,
-        collection_id=collection_id,
-        collection=collection,
-        collection_items=items,
-        upsert_items=True,
-    )
+    headers = _stac_headers(mmgis_token)
+    host = mmgis_host.rstrip("/")
+
+    coll_url = f"{host}/collections/{collection_id}"
+    get_resp = requests.get(coll_url, headers=headers)
+    if get_resp.status_code == 200:
+        # Merge temporal extents with the existing collection before PUT.
+        existing = get_resp.json()
+        existing_intervals = (
+            existing.get("extent", {}).get("temporal", {}).get("interval", [])
+        )
+        all_dts = []
+        for d in dts:
+            all_dts.append(d if d.tzinfo else d.replace(tzinfo=timezone.utc))
+        for interval in existing_intervals:
+            for ts in interval:
+                if ts:
+                    parsed = datetime.fromisoformat(ts.replace("Z", "+00:00"))
+                    all_dts.append(
+                        parsed if parsed.tzinfo else parsed.replace(tzinfo=timezone.utc)
+                    )
+        merged_min = min(all_dts) if all_dts else None
+        merged_max = max(all_dts) if all_dts else None
+        collection.extent.temporal = pystac.TemporalExtent([[merged_min, merged_max]])
+        put = requests.put(coll_url, json=collection.to_dict(), headers=headers)
+        put.raise_for_status()
+        log.info(f"Updated STAC collection {collection_id}")
+    elif get_resp.status_code == 404:
+        post = requests.post(f"{host}/collections", json=collection.to_dict(),
+                             headers=headers)
+        post.raise_for_status()
+        log.info(f"Created STAC collection {collection_id}")
+    else:
+        get_resp.raise_for_status()
+
+    bulk_url = f"{host}/collections/{collection_id}/bulk_items"
+    payload = {
+        "items": {item.id: item.to_dict() for item in items},
+        "method": "upsert",
+    }
+    bulk = requests.post(bulk_url, json=payload, headers=headers)
+    bulk.raise_for_status()
     log.info(f"Upserted {len(items)} STAC item(s) into {collection_id}")
 
 
@@ -362,21 +537,19 @@ def s3_key_to_item_id(key: str) -> Optional[str]:
     """Derive the STAC item ID from a pruned S3 key.
 
     COG items use the filename stem as their ID (matches rio_stac /
-    ingest_cog.py build_stac_item). Non-TIFF keys return None."""
+    cog_helpers.build_stac_item). Non-TIFF keys return None."""
     if not key.lower().endswith((".tif", ".tiff")):
         return None
     return Path(key).stem
 
 
-def delete_stac_items(mmgis_host: str, mmgis_token: str,
+def delete_stac_items(mmgis_host: str, mmgis_token: Optional[str],
                       collection_id: str, item_ids: List[str]) -> None:
-    """Delete STAC items from MMGIS by ID."""
-    headers = {
-        "Authorization": f"Bearer {mmgis_token}",
-        "Content-Type": "application/json",
-    }
+    """Delete STAC items by ID via the transaction extension."""
+    headers = _stac_headers(mmgis_token)
+    host = mmgis_host.rstrip("/")
     for item_id in item_ids:
-        url = f"{mmgis_host}/stac/collections/{collection_id}/items/{item_id}"
+        url = f"{host}/collections/{collection_id}/items/{item_id}"
         try:
             resp = requests.delete(url, headers=headers)
             if 200 <= resp.status_code < 300:
@@ -396,7 +569,7 @@ def delete_stac_items(mmgis_host: str, mmgis_token: str,
 # Orchestration
 # ---------------------------------------------------------------------------
 
-def run_sync(config: dict, maap: MAAP) -> None:
+def run_sync(config: dict, maap: MAAP, catalog_existing: bool = False) -> None:
     local_dir = Path(config["local_dir"])
     manifest_path = local_dir / MANIFEST_FILENAME
     manifest = load_manifest(manifest_path)
@@ -404,11 +577,10 @@ def run_sync(config: dict, maap: MAAP) -> None:
     s3 = get_s3_client_from_maap(maap)
 
     mmgis_host = config.get("mmgis_host", "")
-    mmgis_token_secret = config.get("mmgis_token_secret_name", "")
     any_stac = any(s.get("stac_update") for s in config["sources"])
-    mmgis_token = None
-    if mmgis_host and mmgis_token_secret and any_stac:
-        mmgis_token = maap.secrets.get_secret(mmgis_token_secret)
+    mmgis_token = os.environ.get("MMGIS_TOKEN") if any_stac else None
+    if any_stac and not mmgis_token:
+        log.warning("stac_update is enabled but MMGIS_TOKEN is not set — STAC steps will be skipped")
 
     total_fetched = 0
     total_pruned = 0
@@ -420,20 +592,37 @@ def run_sync(config: dict, maap: MAAP) -> None:
         cid = source["collection_id"]
         sync_types = source["sync"]
         do_stac = source.get("stac_update", False) and mmgis_token
+        path_remove = source.get("path_remove")
+        path_replace_with = source.get("path_replace_with")
+        fix_antimeridian = source.get("fix_antimeridian", True)
+        arctic_bbox = source.get("arctic_bbox", False)
+        time_regex = source.get("time_regex")
+        time_format = source.get("time_format", "%Y%m%dT%H%M%S")
 
         if "cog" in sync_types:
             cog_prefix = build_cog_prefix(prefix, cid)
-            cog_dir = local_dir / name / "cog"
+            cog_dir = local_dir / name
             sr = sync_prefix(s3, bucket, cog_prefix, cog_dir,
                              manifest, f"{name}/cog")
             total_fetched += sr.fetched
             total_pruned += sr.pruned
             log.info(f"{name}/cog: {sr.fetched} new, {sr.pruned} pruned")
 
-            if sr.new_keys and do_stac:
-                items = build_cog_stac_items(sr.new_keys, bucket,
-                                             cog_prefix, cog_dir, cid)
-                upsert_stac(mmgis_host, mmgis_token, cid, items)
+            if do_stac:
+                # catalog_existing → upsert every COG that exists on disk,
+                # not just the freshly-downloaded ones.
+                catalog_keys = sr.all_keys if catalog_existing else sr.new_keys
+                if catalog_keys:
+                    items = build_cog_stac_items(
+                        catalog_keys, bucket, cog_prefix, cog_dir, cid,
+                        path_remove=path_remove,
+                        path_replace_with=path_replace_with,
+                        fix_antimeridian=fix_antimeridian,
+                        arctic_bbox=arctic_bbox,
+                        time_regex=time_regex,
+                        time_format=time_format,
+                    )
+                    upsert_stac(mmgis_host, mmgis_token, cid, items)
 
             if sr.pruned_keys and do_stac:
                 ids_to_delete = [
@@ -446,15 +635,24 @@ def run_sync(config: dict, maap: MAAP) -> None:
 
         if "zarr" in sync_types:
             zarr_prefix = build_zarr_prefix(prefix, cid)
-            zarr_dir = local_dir / name / "zarr" / f"{cid}.zarr"
+            zarr_dir = local_dir / name / f"{cid}.zarr"
             sr = sync_prefix(s3, bucket, zarr_prefix, zarr_dir,
                              manifest, f"{name}/zarr")
             total_fetched += sr.fetched
             total_pruned += sr.pruned
             log.info(f"{name}/zarr: {sr.fetched} new, {sr.pruned} pruned")
 
-            if sr.new_keys and do_stac:
-                item = build_zarr_stac_item(zarr_dir, bucket, zarr_prefix, cid)
+            should_catalog_zarr = (
+                do_stac and (sr.new_keys or (catalog_existing and sr.all_keys))
+            )
+            if should_catalog_zarr:
+                item = build_zarr_stac_item(
+                    zarr_dir, bucket, zarr_prefix, cid,
+                    path_remove=path_remove,
+                    path_replace_with=path_replace_with,
+                    fix_antimeridian=fix_antimeridian,
+                    arctic_bbox=arctic_bbox,
+                )
                 if item:
                     upsert_stac(mmgis_host, mmgis_token, cid, [item])
 
@@ -480,6 +678,10 @@ def parse_args(argv: Optional[List[str]] = None) -> argparse.Namespace:
                         help="Override run_hour_utc from config (0-23)")
     parser.add_argument("--once", action="store_true",
                         help="Run a single sync and exit (no scheduling)")
+    parser.add_argument("--catalog-existing", action="store_true",
+                        help="Backfill STAC: upsert items for every file already on disk "
+                             "(not only the freshly-downloaded ones). Useful after a manual "
+                             "download or when first enabling stac_update.")
     return parser.parse_args(argv)
 
 
@@ -491,7 +693,7 @@ def main() -> None:
     maap = MAAP(maap_host=config.get("maap_host", "api.maap-project.org"))
 
     if args.once:
-        run_sync(config, maap)
+        run_sync(config, maap, catalog_existing=args.catalog_existing)
         return
 
     shutdown = False
@@ -507,7 +709,7 @@ def main() -> None:
     log.info(f"Scheduler started — daily sync at {run_hour:02d}:00 UTC")
     log.info(f"Syncing {len(config['sources'])} source(s)")
 
-    run_sync(config, maap)
+    run_sync(config, maap, catalog_existing=args.catalog_existing)
 
     while not shutdown:
         wait = seconds_until_hour(run_hour)

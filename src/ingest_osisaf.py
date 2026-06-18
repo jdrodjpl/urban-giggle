@@ -24,7 +24,7 @@ Per (product, date) the worker:
   3. Reproject (gdalwarp) EPSG:3411 -> canonical EPSG:3413 10 km grid.
      Continuous concentration uses bilinear; categorical type/edge use
      nearest so class codes are never blended.
-  4. COG-ify (reuse ingest_cog.convert_to_cog_lowmem).
+  4. COG-ify (reuse cog_helpers.convert_to_cog_lowmem).
   5. Upload the COG to its dated S3 key. No STAC catalog is written — OSI SAF
      has no MMGIS cataloging step to consume one, and the class/flag semantics
      already live in the COG band metadata.
@@ -53,8 +53,8 @@ import numpy as np
 import rasterio
 from rasterio.transform import Affine
 
-import ingest_cog  # reuse convert_to_cog_lowmem / build_stac_item / upload / catalog
-from common_utils import AWSUtils  # noqa: F401  (kept for parity; uploads go via ingest_cog)
+import cog_helpers  # reuse convert_to_cog_lowmem / build_stac_item / upload / catalog
+from common_utils import AWSUtils  # noqa: F401  (kept for parity; uploads go via cog_helpers)
 
 logger = logging.getLogger("ingest_osisaf")
 logging.basicConfig(level=logging.INFO,
@@ -373,7 +373,7 @@ def main() -> int:
         cog_name = f"{collection_id}_{args.date}_COG.tif"
         cog_path = scratch_dir / "cog" / cog_name
         cog_path.parent.mkdir(parents=True, exist_ok=True)
-        ok, msg = ingest_cog.convert_to_cog_lowmem(
+        ok, msg = cog_helpers.convert_to_cog_lowmem(
             input_file=warped,
             output_file=cog_path,
             overwrite=True,
@@ -393,9 +393,9 @@ def main() -> int:
         # item/catalog is built — nothing in the OSI SAF pipeline consumes one.
         item_dt = datetime.strptime(args.date, "%Y%m%d").replace(
             hour=12, tzinfo=timezone.utc)
-        s3_key = ingest_cog.build_dated_s3_key(
+        s3_key = cog_helpers.build_dated_s3_key(
             args.s3_prefix, collection_id, item_dt, cog_path.name)
-        s3_url = ingest_cog.upload_cog_to_key(
+        s3_url = cog_helpers.upload_cog_to_key(
             cog_path, args.s3_bucket, s3_key, args.role_arn)
         logger.info(f"OSI SAF {args.product} ingest complete: {s3_url}")
         return 0
