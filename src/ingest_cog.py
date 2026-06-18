@@ -394,7 +394,13 @@ def main() -> int:
                         choices=["nearest", "average", "cubic", "mode"])
     parser.add_argument("--overwrite", action="store_true")
     parser.add_argument("--output", default="output",
-                        help="Local working directory for staged input/output")
+                        help="DPS-persisted output dir; only the STAC catalog "
+                             "is written here.")
+    parser.add_argument("--scratch-dir", default="scratch",
+                        help="Working dir for staged inputs / mosaic / COG. NOT "
+                             "persisted by DPS; deleted on exit unless --keep-scratch.")
+    parser.add_argument("--keep-scratch", action="store_true",
+                        help="Keep the scratch dir for debugging.")
 
     parser.add_argument("--scp-host", default=None,
                         help="Optional: SCP delivery hostname/IP. When set, "
@@ -409,9 +415,16 @@ def main() -> int:
 
     args = parser.parse_args()
 
+    # `output/` (work_dir) is the only dir MAAP DPS persists to S3 — keep it to
+    # just the STAC catalog (consumed by the MMGIS cataloging step). Heavy
+    # intermediates (staged inputs, mosaic, COG) go to scratch/, which DPS does
+    # not persist and which we delete on exit, so dps_output/ doesn't accrue
+    # tens of GB of mosaics per daily job.
     work_dir = Path(args.output)
     work_dir.mkdir(parents=True, exist_ok=True)
-    cog_dir = work_dir / "cog"
+    scratch_dir = Path(args.scratch_dir)
+    scratch_dir.mkdir(parents=True, exist_ok=True)
+    cog_dir = scratch_dir / "cog"
     cog_dir.mkdir(parents=True, exist_ok=True)
     stac_dir = work_dir / "stac"
     stac_dir.mkdir(parents=True, exist_ok=True)
@@ -452,7 +465,7 @@ def main() -> int:
                 raise RuntimeError(f"Worker CMR search returned 0 inputs for {source.description}")
 
             urls = [r.url for r in refs]
-            staged_dir = work_dir / "staged"
+            staged_dir = scratch_dir / "staged"
             staged_dir.mkdir(parents=True, exist_ok=True)
             staged = stage_inputs_batch(
                 None, urls, staged_dir, args.role_arn,
@@ -462,7 +475,7 @@ def main() -> int:
                 raise RuntimeError("Batch staging produced 0 input files")
 
             mosaic_name = f"{args.collection_id}_{args.mosaic_date}_daily.tif"
-            mosaic_path = work_dir / "mosaic" / mosaic_name
+            mosaic_path = scratch_dir / "mosaic" / mosaic_name
             mosaic_path.parent.mkdir(parents=True, exist_ok=True)
             mosaic_tiffs(staged, mosaic_path)
             input_path = mosaic_path
@@ -474,7 +487,7 @@ def main() -> int:
                                  "--input-s3-urls or --input-https-urls")
             s3_urls = json.loads(args.input_s3_urls) if args.input_s3_urls else None
             https_urls = json.loads(args.input_https_urls) if args.input_https_urls else None
-            staged_dir = work_dir / "staged"
+            staged_dir = scratch_dir / "staged"
             staged_dir.mkdir(parents=True, exist_ok=True)
             staged = stage_inputs_batch(
                 s3_urls, https_urls, staged_dir, args.role_arn,
@@ -484,14 +497,14 @@ def main() -> int:
                 raise RuntimeError("Batch staging produced 0 input files")
 
             mosaic_name = f"{args.collection_id}_{args.mosaic_date}_daily.tif"
-            mosaic_path = work_dir / "mosaic" / mosaic_name
+            mosaic_path = scratch_dir / "mosaic" / mosaic_name
             mosaic_path.parent.mkdir(parents=True, exist_ok=True)
             mosaic_tiffs(staged, mosaic_path)
             input_path = mosaic_path
         else:
             input_path = stage_input(
                 args.input_s3, args.input_tiff, args.input_https,
-                work_dir, args.role_arn,
+                scratch_dir, args.role_arn,
                 earthdata_token_secret_name=args.earthdata_token_secret_name,
             )
         cog_path = cog_dir / f"{input_path.stem}_COG.tif"
@@ -551,6 +564,11 @@ def main() -> int:
     except Exception as e:
         logger.error(f"TERMINATED: unexpected error: {e}", exc_info=True)
         return 1
+    finally:
+        # Heavy intermediates live in scratch/, outside the DPS-persisted
+        # output/, so they never reach S3 — drop them on exit regardless.
+        if not args.keep_scratch:
+            shutil.rmtree(scratch_dir, ignore_errors=True)
 
 
 if __name__ == "__main__":

@@ -243,12 +243,24 @@ def main() -> int:
     p.add_argument("--overview-resampling", default="average")
     p.add_argument("--overwrite", action="store_true")
 
-    p.add_argument("--output", default="output")
+    p.add_argument("--output", default="output",
+                   help="DPS-persisted output dir; only the STAC catalog is written here.")
+    p.add_argument("--scratch-dir", default="scratch",
+                   help="Working dir for zips / calibrated / geocoded / mosaic / "
+                        "COG. NOT persisted by DPS; deleted on success unless --keep-scratch.")
+    p.add_argument("--keep-scratch", action="store_true",
+                   help="Keep the scratch dir for debugging.")
     args = p.parse_args()
 
-    work_dir = Path(args.output)
-    work_dir.mkdir(parents=True, exist_ok=True)
-    zip_dir = work_dir / "zips"
+    # `output/` (out_dir) is the only dir MAAP DPS persists to S3 — keep it to
+    # just the STAC catalog (consumed by the MMGIS cataloging step). Heavy
+    # intermediates go to scratch/, which DPS does not persist, so dps_output/
+    # doesn't accrue tens of GB of geocoded tiffs + mosaics per daily job.
+    out_dir = Path(args.output)
+    out_dir.mkdir(parents=True, exist_ok=True)
+    scratch_dir = Path(args.scratch_dir)
+    scratch_dir.mkdir(parents=True, exist_ok=True)
+    zip_dir = scratch_dir / "zips"
 
     maap = MaapUtils.get_maap_instance()
     edl_creds = _resolve_edl_creds(args.earthdata_token_secret_name, maap)
@@ -283,7 +295,7 @@ def main() -> int:
         logger.info(f"[{i}/{len(urls)}] {os.path.basename(url.split('?',1)[0])}")
         zip_path = download_granule_via_asf(url, zip_dir, edl_creds)
         try:
-            geo_tiff = process_granule(zip_path, work_dir, args.polarization)
+            geo_tiff = process_granule(zip_path, scratch_dir, args.polarization)
             geocoded.append(geo_tiff)
         finally:
             try:
@@ -296,14 +308,14 @@ def main() -> int:
     logger.info(f"{len(geocoded)} granule(s) geocoded to EPSG:3413; mosaicking")
 
     # --- 3. Mosaic all per-granule TIFFs into one daily raster ---
-    mosaic_path = work_dir / f"{args.collection_id}_{args.mosaic_date}_daily.tif"
+    mosaic_path = scratch_dir / f"{args.collection_id}_{args.mosaic_date}_daily.tif"
     ingest_cog.mosaic_tiffs(geocoded, mosaic_path,
                              target_crs="EPSG:3413",
                              target_res=40.0,
                              nodata=float("nan"))
 
     # --- 4. COG conversion (reuse) ---
-    cog_path = work_dir / f"{args.collection_id}_{args.mosaic_date}_daily_COG.tif"
+    cog_path = scratch_dir / f"{args.collection_id}_{args.mosaic_date}_daily_COG.tif"
     ok, msg = ingest_cog.convert_to_cog_lowmem(
         input_file=mosaic_path,
         output_file=cog_path,
@@ -333,10 +345,15 @@ def main() -> int:
     item.assets["asset"].href = s3_url
     logger.info(f"uploaded → {s3_url}")
 
-    # --- 7. STAC catalog ---
-    stac_dir = work_dir / "stac"
+    # --- 7. STAC catalog (the one artifact persisted to output/) ---
+    stac_dir = out_dir / "stac"
     ingest_cog.write_stac_catalog(item, args.collection_id, stac_dir)
     logger.info(f"STAC catalog → {stac_dir}/catalog.json")
+
+    # Heavy intermediates (zips/calibrated/geocoded/mosaic/COG) live in scratch/,
+    # outside the DPS-persisted output/, so they never reach S3 — drop them now.
+    if not args.keep_scratch:
+        shutil.rmtree(scratch_dir, ignore_errors=True)
 
     return 0
 
