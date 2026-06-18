@@ -1,0 +1,61 @@
+algorithm_description: Frozon OSI SAF sea-ice ingest worker — downloads one daily OSI SAF NetCDF (concentration / type / edge) for the Northern Hemisphere from the met.no THREDDS server (anonymous HTTP), extracts the product variable, forces the EPSG:3411 source grid, reprojects to canonical EPSG:3413, writes a COG and STAC, uploads to S3.
+algorithm_name: frozon-iss-ingest-osisaf
+algorithm_version: v1
+build_command: urban-giggle/.maap/ingest-osisaf/build.sh
+disk_space: 20GB
+docker_container_url: mas.maap-project.org/root/maap-workspaces/custom_images/maap_base:v4.2.0
+inputs:
+  config: []
+  file: []
+  positional:
+  - default: ""
+    description: OSI SAF product to ingest — one of conc | type | edge.
+    name: product
+    required: true
+  - default: ""
+    description: Acquisition date YYYYMMDD (the daily file timestamp; nominal 12:00 UTC).
+    name: date
+    required: true
+  - default: "nh"
+    description: Hemisphere (only 'nh' / Arctic supported).
+    name: hemisphere
+    required: false
+  - default: ""
+    description: Override the THREDDS fileServer base URL (testing; defaults to thredds.met.no).
+    name: thredds_base
+    required: false
+  - default: ""
+    description: STAC collection ID / S3 folder. Defaults to the per-product collection (frozon-osisaf-{sic,icetype,iceedge}-daily) when blank.
+    name: collection_id
+    required: false
+  - default: ""
+    description: Target S3 bucket for the COG output.
+    name: s3_bucket
+    required: true
+  - default: ""
+    description: Optional S3 prefix within the output bucket.
+    name: s3_prefix
+    required: false
+  - default: ""
+    description: AWS IAM Role ARN to assume for S3 write (optional — defaults to worker's identity).
+    name: role_arn
+    required: false
+  - default: DEFLATE
+    description: COG compression method (DEFLATE, LZW, JPEG, WEBP, NONE).
+    name: compress
+    required: false
+  - default: "512"
+    description: COG tile block size (256, 512, 1024).
+    name: blocksize
+    required: false
+  - default: "512"
+    description: GDAL_CACHEMAX in MB for the COG conversion subprocess (files are tiny — 512 is ample).
+    name: max_memory
+    required: false
+  - default: "false"
+    description: Overwrite existing local COG output (S3 dedupe is enforced runner-side).
+    name: overwrite
+    required: false
+queue: maap-dps-worker-8gb
+repository_url: https://github.com/jdrodjpl/urban-giggle.git
+run_command: urban-giggle/.maap/ingest-osisaf/run-ingest-osisaf.sh

@@ -1,0 +1,282 @@
+#!/usr/bin/env python3
+"""Submit Frozon OSI SAF sea-ice worker jobs directly from the GH Actions runner.
+
+OSI SAF differs from the OPERA / S1 pipelines: no CMR, no Earthdata Login.
+Daily files live at deterministic anonymous-HTTP URLs on the met.no THREDDS
+server, so "discovery" is just an HTTP existence check per date — no granule
+search, and no granule-count threshold filtering (each file is one complete
+hemisphere analysis, not a variable-count mosaic).
+
+Per run, for each requested product (conc / type / edge):
+
+  1. Walk back day-by-day, HEAD-checking the THREDDS URL, collecting the
+     INGEST_LAST_N_COMPLETE_DAYS most recent dates that exist.
+  2. (Optionally drop the newest DROP_NEWEST dates — default 0; OSI SAF
+     files are final on publish, unlike partial-day SAR mosaics.)
+  3. Retention sweep: keep RETAIN_DAYS most recent date folders per
+     collection, prune the rest.
+  4. S3 pre-check (the worker does NOT dedupe against S3) — submit one
+     `frozon-iss-ingest-osisaf:v1` worker per (product, missing date).
+
+Required env:
+    MAAP_TOKEN — MAAP API token for headless auth.
+"""
+
+import os
+import re
+import sys
+from datetime import datetime, timedelta, timezone
+
+from maap.maap import MAAP
+
+# Per-product default collection IDs (mirror PRODUCTS in src/ingest_osisaf.py).
+PRODUCT_COLLECTIONS = {
+    "conc": "frozon-osisaf-sic-daily",
+    "type": "frozon-osisaf-icetype-daily",
+    "edge": "frozon-osisaf-iceedge-daily",
+}
+# THREDDS dir + filename stem per product.
+PRODUCT_FILES = {
+    "conc": ("conc", "ice_conc"),
+    "type": ("type", "ice_type"),
+    "edge": ("edge", "ice_edge"),
+}
+
+DEFAULTS = {
+    "MAAP_HOST":                  "api.maap-project.org",
+    "WORKER_ALGO_ID":             "frozon-iss-ingest-osisaf",
+    "WORKER_ALGO_VERSION":        "v1",
+    "QUEUE":                      "maap-dps-worker-8gb",
+    # Which products to ingest this run (comma-separated subset of conc,type,edge).
+    "PRODUCTS":                   "conc,type,edge",
+    "HEMISPHERE":                 "nh",
+    "THREDDS_BASE":               "https://thredds.met.no/thredds/fileServer/osisaf/met.no/ice",
+    # Output.
+    "S3_BUCKET":                  "maap-ops-workspace",
+    "S3_PREFIX":                  "jdrodrig/frozon/cogs/",
+    # Discovery window.
+    "LOOKBACK_DAYS":              "30",
+    "INGEST_LAST_N_COMPLETE_DAYS": "7",
+    # OSI SAF files are final on publish, so by default we keep the newest.
+    # Bump if you ever observe an in-progress newest file.
+    "DROP_NEWEST":                "0",
+    # Worker tuning.
+    "COMPRESS":                   "DEFLATE",
+    "BLOCKSIZE":                  "512",
+    "MAX_MEMORY":                 "512",
+    "OVERWRITE":                  "false",
+    "RETAIN_DAYS":                "7",
+}
+
+
+def env(key: str) -> str:
+    return os.environ.get(key, DEFAULTS.get(key, ""))
+
+
+# --------------------------------------------------------------------------
+# THREDDS existence check (discovery)
+# --------------------------------------------------------------------------
+
+def thredds_url(product: str, hemisphere: str, date_key: str) -> str:
+    sub_dir, stem = PRODUCT_FILES[product]
+    dt = datetime.strptime(date_key, "%Y%m%d")
+    fname = f"{stem}_{hemisphere}_polstere-100_multi_{date_key}1200.nc"
+    base = env("THREDDS_BASE").rstrip("/")
+    return f"{base}/{sub_dir}/{dt.year:04d}/{dt.month:02d}/{fname}"
+
+
+def file_exists(url: str) -> bool:
+    """True if the file is published. Prefer a cheap HEAD; fall back to a
+    1-byte ranged GET for servers that don't answer HEAD cleanly."""
+    import requests
+    try:
+        r = requests.head(url, timeout=30, allow_redirects=True)
+        if r.status_code == 200:
+            return True
+        if r.status_code == 404:
+            return False
+        # Some THREDDS deployments answer HEAD oddly (405/403) — confirm via GET.
+        r = requests.get(url, timeout=30, stream=True,
+                         headers={"Range": "bytes=0-0"})
+        return r.status_code in (200, 206)
+    except Exception as e:  # noqa: BLE001 — treat network hiccup as "unknown -> absent"
+        print(f"    HEAD/GET error for {url}: {e}")
+        return False
+
+
+def discover_dates(product: str) -> list[str]:
+    """Walk back day-by-day, returning the most recent existing dates
+    (newest-first), up to INGEST_LAST_N_COMPLETE_DAYS + DROP_NEWEST."""
+    hemisphere = env("HEMISPHERE")
+    lookback = int(env("LOOKBACK_DAYS"))
+    want = int(env("INGEST_LAST_N_COMPLETE_DAYS")) + int(env("DROP_NEWEST"))
+    today = datetime.now(timezone.utc).date()
+    print(f"[{product}] walking back from {today.isoformat()} (≤{lookback}d), "
+          f"collecting {want} existing date(s).")
+
+    found: list[str] = []
+    for offset in range(0, lookback + 1):
+        if len(found) >= want:
+            break
+        day = (today - timedelta(days=offset)).strftime("%Y%m%d")
+        if file_exists(thredds_url(product, hemisphere, day)):
+            found.append(day)
+            print(f"    {day}: present ({len(found)}/{want})")
+    return found
+
+
+# --------------------------------------------------------------------------
+# Workspace credentials + retention + S3 pre-check (per collection)
+# --------------------------------------------------------------------------
+
+def _maap_s3_client(maap: MAAP):
+    import boto3
+    response = maap.aws.workspace_bucket_credentials()
+    creds = response.get("credentials") if isinstance(response, dict) else None
+    if not creds or "aws_access_key_id" not in creds:
+        raise RuntimeError(f"Unexpected creds shape: {response!r}")
+    return boto3.client(
+        "s3",
+        aws_access_key_id=creds["aws_access_key_id"],
+        aws_secret_access_key=creds["aws_secret_access_key"],
+        aws_session_token=creds["aws_session_token"],
+    )
+
+
+def _collection_prefix(collection_id: str) -> str:
+    parts = [p for p in (env("S3_PREFIX").strip("/"), collection_id) if p]
+    return "/".join(parts) + "/"
+
+
+def prune_old_cogs(s3, collection_id: str) -> None:
+    retain_days = int(env("RETAIN_DAYS"))
+    if retain_days <= 0:
+        return
+    from datetime import date as _date
+    bucket = env("S3_BUCKET")
+    prefix = _collection_prefix(collection_id)
+    date_pattern = re.compile(r"/(\d{4})/(\d{2})/(\d{2})/")
+    objects_by_date: dict[_date, list[str]] = {}
+    paginator = s3.get_paginator("list_objects_v2")
+    for page in paginator.paginate(Bucket=bucket, Prefix=prefix):
+        for obj in page.get("Contents", []):
+            m = date_pattern.search(obj["Key"])
+            if m:
+                d = _date(int(m.group(1)), int(m.group(2)), int(m.group(3)))
+                objects_by_date.setdefault(d, []).append(obj["Key"])
+    if not objects_by_date:
+        print(f"[{collection_id}] retention: no date folders under s3://{bucket}/{prefix}.")
+        return
+    sorted_desc = sorted(objects_by_date.keys(), reverse=True)
+    keep = set(sorted_desc[:retain_days])
+    to_delete = [k for d in sorted_desc if d not in keep for k in objects_by_date[d]]
+    if not to_delete:
+        print(f"[{collection_id}] retention: {len(sorted_desc)} date(s), all within "
+              f"retain_days={retain_days}; nothing to delete.")
+        return
+    drop = [d for d in sorted_desc if d not in keep]
+    print(f"[{collection_id}] retention: deleting {len(to_delete)} object(s) from {drop}")
+    for i in range(0, len(to_delete), 1000):
+        s3.delete_objects(
+            Bucket=bucket,
+            Delete={"Objects": [{"Key": k} for k in to_delete[i:i + 1000]]},
+        )
+
+
+def cog_exists_in_s3(s3, collection_id: str, date_key: str) -> bool:
+    yyyy, mm, dd = date_key[:4], date_key[4:6], date_key[6:8]
+    bucket = env("S3_BUCKET")
+    key_prefix = _collection_prefix(collection_id) + f"{yyyy}/{mm}/{dd}/"
+    r = s3.list_objects_v2(Bucket=bucket, Prefix=key_prefix, MaxKeys=1)
+    return r.get("KeyCount", 0) > 0
+
+
+# --------------------------------------------------------------------------
+# Submit
+# --------------------------------------------------------------------------
+
+def submit_worker(maap: MAAP, product: str, collection_id: str, date_key: str):
+    params = {
+        "identifier":     f"Frozon-OSISAF-{product}_{date_key}",
+        "algo_id":        env("WORKER_ALGO_ID"),
+        "version":        env("WORKER_ALGO_VERSION"),
+        "queue":          env("QUEUE"),
+        "product":        product,
+        "date":           date_key,
+        "hemisphere":     env("HEMISPHERE"),
+        "collection_id":  collection_id,
+        "s3_bucket":      env("S3_BUCKET"),
+        "s3_prefix":      env("S3_PREFIX"),
+        "compress":       env("COMPRESS"),
+        "blocksize":      env("BLOCKSIZE"),
+        "max_memory":     env("MAX_MEMORY"),
+        "overwrite":      env("OVERWRITE"),
+    }
+    return maap.submitJob(**{k: v for k, v in params.items() if v})
+
+
+# --------------------------------------------------------------------------
+# main
+# --------------------------------------------------------------------------
+
+def main() -> int:
+    token = os.environ.get("MAAP_TOKEN")
+    if token:
+        os.environ["MAAP_PGT"] = token
+    maap = MAAP(maap_host=env("MAAP_HOST"))
+
+    products = [p.strip() for p in env("PRODUCTS").split(",") if p.strip()]
+    unknown = [p for p in products if p not in PRODUCT_COLLECTIONS]
+    if unknown:
+        print(f"Unknown product(s) {unknown}; valid: {sorted(PRODUCT_COLLECTIONS)}")
+        return 1
+
+    s3 = _maap_s3_client(maap)
+    drop_newest = int(env("DROP_NEWEST"))
+    last_n = int(env("INGEST_LAST_N_COMPLETE_DAYS"))
+
+    total_submitted, total_failed = [], []
+    for product in products:
+        collection_id = PRODUCT_COLLECTIONS[product]
+        print(f"\n=== Product '{product}' -> collection '{collection_id}' ===")
+
+        prune_old_cogs(s3, collection_id)
+
+        dates = discover_dates(product)
+        if drop_newest and dates:
+            dropped, dates = dates[:drop_newest], dates[drop_newest:]
+            print(f"[{product}] dropped newest {drop_newest}: {dropped}")
+        candidates = dates[:last_n]
+        if not candidates:
+            print(f"[{product}] no dates discovered. Skipping.")
+            continue
+
+        to_submit = [d for d in candidates if not cog_exists_in_s3(s3, collection_id, d)]
+        skipped = [d for d in candidates if d not in to_submit]
+        if skipped:
+            print(f"[{product}] skipping {len(skipped)} with existing COG: {skipped}")
+        if not to_submit:
+            print(f"[{product}] all candidates already ingested.")
+            continue
+        print(f"[{product}] submitting {len(to_submit)} worker(s): {to_submit}")
+
+        for d in to_submit:
+            try:
+                job = submit_worker(maap, product, collection_id, d)
+            except Exception as e:  # noqa: BLE001
+                print(f"  ✗ {product} {d}: submitJob raised: {e}")
+                total_failed.append((product, d))
+                continue
+            if not getattr(job, "id", None):
+                print(f"  ✗ {product} {d}: submitJob returned no id: {job}")
+                total_failed.append((product, d))
+                continue
+            print(f"  ✓ {product} {d}: {job.id}  status={getattr(job, 'status', '?')}")
+            total_submitted.append(job.id)
+
+    print(f"\nSummary: {len(total_submitted)} submitted, {len(total_failed)} failed.")
+    return 0 if not total_failed else 2
+
+
+if __name__ == "__main__":
+    sys.exit(main())
