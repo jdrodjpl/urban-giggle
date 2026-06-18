@@ -1,0 +1,57 @@
+name: Daily OSI SAF Zarr ingest
+
+# Syncs three OSI SAF Zarr time series (concentration / type / edge) with the
+# current COG state in S3. Reuses the data-agnostic Zarr worker
+# (frozon-iss-ingest-zarr) and the env-parameterized runner
+# scripts/submit_zarr_pipeline.py — no new algorithm registration. One matrix
+# job per product (independent Zarr stores), so a failure in one doesn't block
+# the others.
+
+on:
+  schedule:
+    # 12:30 UTC — after the OSI SAF COG cron (06:45) has long landed, and
+    # 30 min off the S1 Zarr cron (12:00) to space out DPS queue contention.
+    - cron: "30 12 * * *"
+  workflow_dispatch:
+
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - product: conc
+            cog_collection_id: frozon-osisaf-sic-daily
+            zarr_collection_id: frozon-osisaf-sic-zarr
+          - product: type
+            cog_collection_id: frozon-osisaf-icetype-daily
+            zarr_collection_id: frozon-osisaf-icetype-zarr
+          - product: edge
+            cog_collection_id: frozon-osisaf-iceedge-daily
+            zarr_collection_id: frozon-osisaf-iceedge-zarr
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+
+      - name: Install dependencies
+        # boto3 for COG listing; xarray + zarr + s3fs to read the existing
+        # Zarr's time coord from S3; maap-py for submitJob + workspace creds.
+        run: pip install maap-py boto3 xarray zarr s3fs
+
+      - name: Sync ${{ matrix.product }} Zarr to COG state
+        env:
+          MAAP_TOKEN: ${{ secrets.MAAP_TOKEN }}
+          MAAP_HOST: "api.maap-project.org"
+          COG_COLLECTION_ID: ${{ matrix.cog_collection_id }}
+          ZARR_COLLECTION_ID: ${{ matrix.zarr_collection_id }}
+          # OSI SAF COG filenames are <collection>_YYYYMMDD_COG.tif — note there
+          # is NO "_daily_" segment (unlike the S1/OPERA default regex), so the
+          # date sits directly before _COG.
+          TIME_REGEX: '_(?P<start_date>\d{8})_COG'
+          # OSI SAF COGs are tiny (~1-2 MB); the 32vcpu mosaic queue is overkill.
+          QUEUE: "maap-dps-worker-8gb"
+        run: python scripts/submit_zarr_pipeline.py

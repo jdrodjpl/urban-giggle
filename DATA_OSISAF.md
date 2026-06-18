@@ -137,6 +137,40 @@ s3://maap-ops-workspace/jdrodrig/frozon/cogs/<collection-id>/YYYY/MM/DD/<collect
 STAC item datetime is stamped to the date at **12:00 UTC** (the nominal
 analysis time), driving the `YYYY/MM/DD` partition.
 
+## Zarr time series
+
+Each COG collection has an optional daily-synced Zarr time series, built by
+the **data-agnostic** Zarr worker (`frozon-iss-ingest-zarr`) — no OSI SAF
+worker code is involved. Wiring is config-only
+(`.github/workflows/daily-osisaf-zarr-ingest.yml`, cron 12:30 UTC):
+
+| COG collection | Zarr store |
+|---|---|
+| `frozon-osisaf-sic-daily` | `frozon-osisaf-sic-zarr` |
+| `frozon-osisaf-icetype-daily` | `frozon-osisaf-icetype-zarr` |
+| `frozon-osisaf-iceedge-daily` | `frozon-osisaf-iceedge-zarr` |
+
+Stored at `s3://<bucket>/jdrodrig/frozon/zarrs/<zarr-collection>/<zarr-collection>.zarr/`.
+
+Two things make the categorical (type/edge) Zarrs safe despite the builder
+being written for continuous data:
+
+- **No resampling on stack.** The streaming builder places each slice by
+  offset on a union grid at the median resolution — it does *not* reproject.
+  Because every OSI SAF COG is already on the identical canonical 760×1120
+  EPSG:3413 grid, the union grid *is* that grid and slices drop in 1:1, so
+  class codes are never blended. (This is the payoff of resampling COGs to a
+  fixed canonical grid rather than keeping native extents.)
+- **Time regex differs from S1/OPERA.** OSI SAF COGs are named
+  `<collection>_YYYYMMDD_COG.tif` (no `_daily_` segment), so the workflow sets
+  `TIME_REGEX = _(?P<start_date>\d{8})_COG`.
+
+Nuance: the builder casts every slice to `float32` with `NaN` fill. For
+concentration that's lossless. For type/edge the integer class codes become
+floats (`1.0`–`4.0`) and the `-1` nodata is preserved as `-1.0` (it is *not*
+remapped to `NaN`). Downstream readers should treat both `-1.0` and `NaN` as
+no-data for the categorical Zarrs.
+
 ## Coverage expectations
 
 Unlike Sentinel-1 SAR, these passive-microwave/scatterometer blends give
