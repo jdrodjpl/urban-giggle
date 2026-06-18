@@ -128,20 +128,31 @@ def download_granule_via_asf(url: str, dest_dir: Path,
 
 def reproject_to_3413(in_tiff: Path, out_tiff: Path,
                       resolution_m: float = 40.0) -> Path:
-    """gdalwarp the GCP-bearing intermediate σ⁰ TIFF to EPSG:3413."""
+    """gdalwarp the GCP-bearing intermediate σ⁰ TIFF to EPSG:3413.
+
+    `-order 2` forces a 2nd-order polynomial fit to the GCPs instead of
+    letting GDAL auto-pick (which often selects TPS for 400+ GCPs — TPS
+    is much slower and was timing out at 30 min on the worker even
+    though the Jupyter test ran in 10 sec).
+    """
     out_tiff.parent.mkdir(parents=True, exist_ok=True)
     cmd = [
         "gdalwarp",
         "-t_srs", "EPSG:3413",
         "-tr", str(resolution_m), str(resolution_m),
         "-r", "nearest",
-        "-multi", "-wo", "NUM_THREADS=ALL_CPUS",
+        "-order", "2",
+        "-multi",
+        "-wo", "NUM_THREADS=ALL_CPUS",
+        "--config", "GDAL_NUM_THREADS", "ALL_CPUS",
+        "--config", "GDAL_CACHEMAX", "4096",
         "-of", "GTiff", "-overwrite",
-        "-co", "COMPRESS=DEFLATE", "-co", "TILED=YES", "-co", "BIGTIFF=IF_SAFER",
+        "-co", "COMPRESS=DEFLATE", "-co", "TILED=YES",
+        "-co", "NUM_THREADS=ALL_CPUS",
         str(in_tiff), str(out_tiff),
     ]
     logger.info(f"gdalwarp → {out_tiff.name}")
-    r = subprocess.run(cmd, capture_output=True, text=True, timeout=1800)
+    r = subprocess.run(cmd, capture_output=True, text=True, timeout=3600)
     if r.returncode != 0:
         raise RuntimeError(f"gdalwarp failed for {in_tiff.name}: {r.stderr[-500:]}")
     return out_tiff
