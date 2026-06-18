@@ -125,8 +125,7 @@ EPSG:3413 (`-te -3850000 -5350000 3750000 5850000 -tr 10000 10000`).
 - Validated 2026-06-16: classes present were {1, 2, 3}.
 
 The product's `flag_values` / `flag_meanings` are written onto the COG band
-metadata and into STAC item properties (`osisaf:flag_values`,
-`osisaf:flag_meanings`).
+metadata, so the class semantics travel with the raster.
 
 ## Output layout
 
@@ -134,8 +133,11 @@ metadata and into STAC item properties (`osisaf:flag_values`,
 s3://maap-ops-workspace/jdrodrig/frozon/cogs/<collection-id>/YYYY/MM/DD/<collection-id>_YYYYMMDD_COG.tif
 ```
 
-STAC item datetime is stamped to the date at **12:00 UTC** (the nominal
-analysis time), driving the `YYYY/MM/DD` partition.
+The `YYYY/MM/DD` partition comes straight from `--date` at the nominal
+**12:00 UTC** analysis time. The COG is the **only** artifact stored in S3:
+the worker streams the NetCDF + intermediates through a scratch dir that's
+deleted on exit, and writes nothing to the DPS-persisted `output/` dir (no
+STAC catalog — nothing in the OSI SAF pipeline consumes one).
 
 ## Zarr time series
 

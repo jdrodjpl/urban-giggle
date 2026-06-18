@@ -25,8 +25,9 @@ Per (product, date) the worker:
      Continuous concentration uses bilinear; categorical type/edge use
      nearest so class codes are never blended.
   4. COG-ify (reuse ingest_cog.convert_to_cog_lowmem).
-  5. Build STAC item (datetime stamped from --date), upload to the dated S3
-     key, emit catalog.json (all reused from ingest_cog).
+  5. Upload the COG to its dated S3 key. No STAC catalog is written — OSI SAF
+     has no MMGIS cataloging step to consume one, and the class/flag semantics
+     already live in the COG band metadata.
 
 Value semantics (see DATA_OSISAF.md):
   * ice_conc : Int16 stored, scale 0.01 -> we emit Float32 percent (0..100),
@@ -40,6 +41,7 @@ from __future__ import annotations
 
 import argparse
 import logging
+import shutil
 import subprocess
 import sys
 import time
@@ -317,7 +319,15 @@ def main() -> int:
     p.add_argument("--blocksize", type=int, default=512)
     p.add_argument("--max-memory", type=int, default=512)
     p.add_argument("--overwrite", action="store_true")
-    p.add_argument("--output", default="output")
+    p.add_argument("--output", default="output",
+                   help="DPS-persisted output dir; only the STAC catalog is "
+                        "written here (the COG goes to S3 directly).")
+    p.add_argument("--scratch-dir", default="scratch",
+                   help="Working dir for the NetCDF download + intermediate "
+                        "GeoTIFFs + COG. NOT persisted by DPS; deleted on exit "
+                        "unless --keep-scratch.")
+    p.add_argument("--keep-scratch", action="store_true",
+                   help="Keep the scratch dir for debugging.")
     args = p.parse_args()
 
     cfg = PRODUCTS[args.product]
@@ -329,9 +339,14 @@ def main() -> int:
         logger.error(f"TERMINATED: --date must be YYYYMMDD, got {args.date!r}")
         return 6
 
-    work_dir = Path(args.output)
-    work_dir.mkdir(parents=True, exist_ok=True)
-    stac_dir = work_dir / "stac"
+    # The canonical COG goes straight to s3://.../cogs/; nothing else needs to
+    # be stored. All work (NetCDF download, EPSG:3411 + 3413 GeoTIFFs, the local
+    # COG) happens in `scratch/`, deleted on exit. `output/` (the only dir DPS
+    # persists) is left empty — no STAC catalog, since nothing consumes it.
+    out_dir = Path(args.output)
+    out_dir.mkdir(parents=True, exist_ok=True)
+    scratch_dir = Path(args.scratch_dir)
+    scratch_dir.mkdir(parents=True, exist_ok=True)
 
     try:
         # --- 1. Resolve + download the NetCDF ---
@@ -343,20 +358,20 @@ def main() -> int:
             url = build_thredds_url(args.product, args.hemisphere, args.date,
                                     args.thredds_base)
             logger.info(f"OSI SAF {args.product} {args.date}: {url}")
-            nc_path = download_netcdf(url, work_dir / "nc" / Path(url).name)
+            nc_path = download_netcdf(url, scratch_dir / "nc" / Path(url).name)
 
         # --- 2. Extract variable onto the forced EPSG:3411 grid ---
         src_tiff = extract_variable(nc_path, args.product,
-                                    work_dir / "src" / f"{args.product}_{args.date}_3411.tif")
+                                    scratch_dir / "src" / f"{args.product}_{args.date}_3411.tif")
 
         # --- 3. Reproject to canonical EPSG:3413 ---
         warped = warp_to_3413(src_tiff,
-                              work_dir / "warp" / f"{args.product}_{args.date}_3413.tif",
+                              scratch_dir / "warp" / f"{args.product}_{args.date}_3413.tif",
                               args.product)
 
         # --- 4. COG conversion (reuse) ---
         cog_name = f"{collection_id}_{args.date}_COG.tif"
-        cog_path = work_dir / "cog" / cog_name
+        cog_path = scratch_dir / "cog" / cog_name
         cog_path.parent.mkdir(parents=True, exist_ok=True)
         ok, msg = ingest_cog.convert_to_cog_lowmem(
             input_file=warped,
@@ -372,28 +387,16 @@ def main() -> int:
         if not ok:
             return 2
 
-        # --- 5. STAC item (datetime from --date at 12:00 UTC nominal) ---
-        item = ingest_cog.build_stac_item(cog_path, collection_id)
-        item.datetime = datetime.strptime(args.date, "%Y%m%d").replace(
+        # --- 5. Upload the COG to its dated S3 key ---
+        # Date partition comes straight from --date (nominal 12:00 UTC); the
+        # class/flag semantics are embedded in the COG band metadata. No STAC
+        # item/catalog is built — nothing in the OSI SAF pipeline consumes one.
+        item_dt = datetime.strptime(args.date, "%Y%m%d").replace(
             hour=12, tzinfo=timezone.utc)
-        item.properties["osisaf:product"] = args.product
-        item.properties["osisaf:variable"] = cfg["variable"]
-        if cfg["flag_values"]:
-            item.properties["osisaf:flag_values"] = cfg["flag_values"]
-            item.properties["osisaf:flag_meanings"] = cfg["flag_meanings"]
-        if not cfg["categorical"]:
-            item.properties["osisaf:units"] = cfg["units"]
-
-        # --- 6. Upload to dated S3 key ---
         s3_key = ingest_cog.build_dated_s3_key(
-            args.s3_prefix, collection_id, item.datetime, cog_path.name)
+            args.s3_prefix, collection_id, item_dt, cog_path.name)
         s3_url = ingest_cog.upload_cog_to_key(
             cog_path, args.s3_bucket, s3_key, args.role_arn)
-        item.assets["asset"].href = s3_url
-        logger.info(f"uploaded -> {s3_url}")
-
-        # --- 7. STAC catalog ---
-        ingest_cog.write_stac_catalog(item, collection_id, stac_dir)
         logger.info(f"OSI SAF {args.product} ingest complete: {s3_url}")
         return 0
 
@@ -405,6 +408,11 @@ def main() -> int:
     except Exception as e:  # noqa: BLE001
         logger.error(f"TERMINATED: unexpected error: {e}", exc_info=True)
         return 1
+    finally:
+        # Drop the scratch dir so DPS only persists output/ (the STAC catalog);
+        # the COG already lives in S3 under the cogs/ prefix.
+        if not args.keep_scratch:
+            shutil.rmtree(scratch_dir, ignore_errors=True)
 
 
 if __name__ == "__main__":
