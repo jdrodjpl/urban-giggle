@@ -176,10 +176,20 @@ def build_zarr_streaming(
             logger.info(f"Limited to {len(tiff_files)} files")
 
         # Validate that we can extract dates from filenames BEFORE doing anything else
+        # NB: this matches the per-file resolution order in the processing loop
+        # below — try the filename pattern first, then fall back to the file's
+        # mtime (which `zarr_io.dump_zarr_slices_to_tiffs` deliberately stamps
+        # with each slice's datetime so the rebuild path works regardless of
+        # whether the user's --time-regex matches the dumped slice naming).
         logger.info("Validating date extraction from filenames...")
         files_without_dates = []
         for tiff_file in tiff_files:
             dt = extract_datetime_from_filename(tiff_file.name, time_regex=time_regex)
+            if not dt:
+                try:
+                    dt = datetime.fromtimestamp(tiff_file.stat().st_mtime)
+                except (OSError, ValueError):
+                    dt = None
             if not dt:
                 files_without_dates.append(tiff_file.name)
 
