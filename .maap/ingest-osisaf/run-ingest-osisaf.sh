@@ -26,9 +26,16 @@ echo "Using ${ENV_PYTHON}"
 export PROJ_DATA=/opt/conda/envs/ingest/share/proj
 export PROJ_LIB=/opt/conda/envs/ingest/share/proj
 export GDAL_DATA=/opt/conda/envs/ingest/share/gdal
+# conda-forge GDAL 3.9+ ships format drivers (netCDF, HDF5, …) as separate
+# plugin packages installed under <env>/lib/gdalplugins/. GDAL only auto-
+# scans there when activated via `conda activate` — we bypass activation,
+# so we have to point GDAL_DRIVER_PATH at it explicitly or rasterio errors
+# with "plugin gdal_netCDF.so is not available".
+export GDAL_DRIVER_PATH=/opt/conda/envs/ingest/lib/gdalplugins
 export PATH=/opt/conda/envs/ingest/bin:${PATH}
 echo "PROJ_DATA=${PROJ_DATA}"
 echo "GDAL_DATA=${GDAL_DATA}"
+echo "GDAL_DRIVER_PATH=${GDAL_DRIVER_PATH}"
 
 if [[ ! -f "_job.json" ]]; then
     echo "ERROR: _job.json file not found"
