@@ -84,54 +84,65 @@ Three standard ways to normalize the raw backscatter measurement:
 | Sigma-naught | σ⁰ | Ground-plane area (assumes flat earth at sea level) |
 | Gamma-naught | γ⁰ | Area perpendicular to radar line-of-sight |
 
-**OPERA RTC-S1 V1 produces γ⁰** (gamma-naught), terrain-flattened. This
-is the intentional choice for polar work:
-
-- Sentinel-1 IW incidence angle varies from ~30° (near-range) to ~46°
-  (far-range) across a single swath.
-- σ⁰ values would change depending on *where in the swath* a pixel
-  fell, even for the same underlying surface — confusing for mosaics
-  that stitch across multiple orbits.
-- γ⁰ neutralizes that. Same surface ⇒ same γ⁰ value, regardless of
-  which orbit imaged it. Critical for daily-mosaic comparison across
-  the Arctic.
+**This pipeline produces σ⁰** (sigma-naught) by applying the per-pixel
+sigmaNought LUT from the SAFE bundle to the raw DN band (formula:
+`σ⁰ = DN² / k²`, then `10 * log10` to convert to decibels). The β⁰
+LUT is also wired up in code if a future consumer needs it.
 
 ### Pixel values
 
-The COGs this pipeline produces store **γ⁰ in linear scale, Float32**.
+The COGs this pipeline produces store **σ⁰ in decibels (dB), Float32**.
 NoData is `NaN`.
 
-**Typical VH γ⁰ ranges** (rough rules of thumb — actual values vary
-with season, surface state, frequency):
+Storing in dB matches NSIDC / Polar View / standard sea-ice products
+and the project's sibling `s1_calibrate.py` Earth Engine workflow.
+Downstream MMGIS / TiTiler can rescale directly without an
+`expression=10*log10(b1)` layer-side transformation.
 
-| Surface | Linear γ⁰ | dB |
+**Typical HH σ⁰ ranges** (rough rules of thumb — actual values vary
+with season, surface state, frequency, incidence angle):
+
+| Surface | σ⁰ dB | (equivalent linear σ⁰) |
 |---|---|---|
-| Open water (calm) | 0.0001 – 0.003 | -40 to -25 dB |
-| Open water (rough) | 0.003 – 0.02 | -25 to -17 dB |
-| First-year ice | 0.005 – 0.05 | -23 to -13 dB |
-| Multi-year ice | 0.02 – 0.1 | -17 to -10 dB |
-| Land / rough surfaces | 0.05 – 0.5 | -13 to -3 dB |
+| Open water (calm) | -30 to -20 dB | 0.001 – 0.01 |
+| Open water (rough) | -20 to -12 dB | 0.01 – 0.06 |
+| First-year ice | -18 to -8 dB | 0.016 – 0.16 |
+| Multi-year ice | -12 to -3 dB | 0.06 – 0.5 |
+| Land / rough surfaces | -10 to +5 dB | 0.1 – 3 |
+
+### Display ranges
+
+For MMGIS / TiTiler / QGIS — directly rescale the dB values:
+
+| Use case | vmin | vmax |
+|---|---|---|
+| Sea-ice contrast (recommended) | -30 | +10 |
+| Tight ocean focus | -25 | -5 |
+| Show very bright targets | -30 | +15 |
+
+No log transformation needed at the layer — `rescale=-30,10` is enough.
 
 ### Converting to other conventions
 
-```
-σ⁰_linear = γ⁰_linear × cos(θ)
-σ⁰_dB     = 10·log10(γ⁰_linear) + 10·log10(cos(θ))
-            = γ⁰_dB + 10·log10(cos(θ))
-```
-
-where **θ** is the local incidence angle at the pixel. OPERA doesn't
-ship θ as part of the VH band, but it's derivable from the granule's
-orbit ephemeris + the DEM if you need it. For most sea-ice analysis
-you'll just work with γ⁰ directly.
-
-**Linear → dB** (very common request from downstream tools):
+dB → linear (in case a downstream wants linear):
 
 ```python
 import numpy as np
-gamma0_db = 10 * np.log10(gamma0_linear)
-# NaN-safe; negative dB is normal for water/ice
+sigma0_linear = 10 ** (sigma0_db / 10)
+# NaN-safe; sigma0_linear is dimensionless, > 0 where valid.
 ```
+
+σ⁰ → γ⁰ (incidence-angle correction):
+
+```
+γ⁰_linear = σ⁰_linear / cos(θ)
+γ⁰_dB     = σ⁰_dB − 10·log10(cos(θ))
+```
+
+where **θ** is the local incidence angle. Sentinel-1 GRD ships an
+incidence-angle annotation XML alongside the calibration LUTs, but
+we don't propagate it into the COG — for sea-ice work on flat ocean
+the incidence effect is small enough to ignore at our display scale.
 
 ## Coverage expectations
 

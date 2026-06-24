@@ -1,17 +1,26 @@
-"""Sentinel-1 GRD radiometric calibration.
+"""Sentinel-1 GRD radiometric calibration → σ⁰ / β⁰ / γ⁰ in **decibels**.
 
 GDAL's SAFE driver exposes the raw DN ("UNCALIB") subdatasets but
 doesn't apply σ⁰ / β⁰ / γ⁰ calibration for GRD products in any current
 GDAL version. This module applies them ourselves from the per-pixel
 calibration LUT in the SAFE annotation XML:
 
-    calibrated(i,j) = DN(i,j)² / k(i,j)²
+    calibrated_linear(i,j) = DN(i,j)² / k(i,j)²
+    calibrated_db(i,j)     = 10 * log10(calibrated_linear)
 
 where k(i,j) is the relevant calibration value (`sigmaNought`,
 `betaNought`, `gamma`, …) interpolated bilinearly from the
 calibration vector grid. The formula is identical across conventions;
 only the LUT differs. See ESA's Sentinel-1 Product Specification
 Section 9.2.
+
+The output is **σ⁰ in decibels** (Float32). Decibels are how SAR
+imagery is conventionally displayed and reported, and storing in dB
+matches NSIDC / Polar View / standard sea-ice products plus the
+sibling `s1_calibrate.py` Earth Engine workflow used elsewhere in the
+project. The downstream MMGIS / TiTiler config can rescale directly
+(e.g. -30 to +10 dB) without a layer-side
+`expression=10*log10(b1)` transformation.
 
 Each calibration writes a separate Float32 GeoTIFF; NaN for pixels
 where DN was 0 (no signal / off-swath). The output preserves the
@@ -109,11 +118,14 @@ def parse_calibration_lut(zip_path: Path, calibration_xml_path: str,
 
 def apply_calibration(dn: np.ndarray, lines: np.ndarray, pixels: np.ndarray,
                       lut: np.ndarray) -> np.ndarray:
-    """Apply DN²/k² calibration to a 2-D DN array using the parsed LUT.
+    """Apply DN²/k² calibration to a 2-D DN array and convert to **decibels**.
 
-    The formula is identical across σ⁰ / β⁰ / γ⁰ conventions — only
-    the LUT (`k`) differs. DN values of 0 map to NaN (no-signal /
-    off-swath). Returns a Float32 array of the same shape as `dn`.
+    The DN²/k² formula is identical across σ⁰ / β⁰ / γ⁰ conventions —
+    only the LUT (`k`) differs. The result is then transformed to dB
+    via `10 * log10(linear)` so the output COG carries directly-
+    displayable radar units (no layer-side `10*log10(b1)` needed for
+    MMGIS / TiTiler). DN values of 0 map to NaN (no-signal / off-swath).
+    Returns a Float32 array of the same shape as `dn`, in dB.
     """
     height, width = dn.shape
     interp = RegularGridInterpolator(
@@ -122,7 +134,12 @@ def apply_calibration(dn: np.ndarray, lines: np.ndarray, pixels: np.ndarray,
     )
     yy, xx = np.meshgrid(np.arange(height), np.arange(width), indexing="ij")
     k = interp((yy, xx)).astype(np.float32)
-    return np.where(dn > 0, (dn ** 2) / (k ** 2), np.nan).astype(np.float32)
+    # `np.where(dn > 0, ..., nan)` masks off-swath / no-signal pixels;
+    # log10 propagates NaN cleanly. Suppress numpy's well-meaning
+    # divide-by-zero / invalid warnings (we already masked the zeros).
+    linear = np.where(dn > 0, (dn ** 2) / (k ** 2), np.nan).astype(np.float32)
+    with np.errstate(divide="ignore", invalid="ignore"):
+        return (10.0 * np.log10(linear)).astype(np.float32)
 
 
 def read_uncalib_dn(zip_path: Path, polarization: str,

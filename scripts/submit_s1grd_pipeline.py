@@ -32,7 +32,7 @@ from maap.maap import MAAP
 DEFAULTS = {
     "MAAP_HOST":                    "api.maap-project.org",
     "WORKER_ALGO_ID":               "frozon-iss-ingest-s1grd",
-    "WORKER_ALGO_VERSION":          "v2",
+    "WORKER_ALGO_VERSION":          "v3",
     "QUEUE":                        "maap-dps-worker-32vcpu-64gb",
     # CMR query — both active S1 satellites.
     "CMR_SHORT_NAMES":              "SENTINEL-1A_DP_GRD_MEDIUM,SENTINEL-1C_DP_GRD_MEDIUM",
