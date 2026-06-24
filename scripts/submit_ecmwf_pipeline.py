@@ -64,7 +64,7 @@ DEFAULTS = {
     "BLOCKSIZE":                  "512",
     "MAX_MEMORY":                 "512",
     "OVERWRITE":                  "false",
-    "RETAIN_DAYS":                "14",
+    "RETAIN_DAYS":                "7",
 }
 
 

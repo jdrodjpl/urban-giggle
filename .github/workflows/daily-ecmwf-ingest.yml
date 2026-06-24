@@ -22,7 +22,7 @@ on:
         default: "0"
       retain_days:
         description: "Keep the N most recent acquisition-date folders in S3 per collection."
-        default: "14"
+        default: "7"
 
 jobs:
   submit:
@@ -49,5 +49,5 @@ jobs:
           LOOKBACK_DAYS: ${{ github.event.inputs.lookback_days || '7' }}
           INGEST_LAST_N_COMPLETE_DAYS: ${{ github.event.inputs.ingest_last_n_complete_days || '4' }}
           DROP_NEWEST: ${{ github.event.inputs.drop_newest || '0' }}
-          RETAIN_DAYS: ${{ github.event.inputs.retain_days || '14' }}
+          RETAIN_DAYS: ${{ github.event.inputs.retain_days || '7' }}
         run: python scripts/submit_ecmwf_pipeline.py
