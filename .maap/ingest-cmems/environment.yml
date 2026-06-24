@@ -1,0 +1,25 @@
+name: ingest
+channels:
+  - conda-forge
+dependencies:
+  - python>=3.11
+  - gdal               # gdalwarp + gdal_translate CLI (warp + COG steps)
+  - rasterio           # used by cog_helpers and rioxarray
+  - rioxarray          # write the CMEMS field to a georeferenced GeoTIFF
+  - xarray
+  - netcdf4            # xarray engine for reading the CMEMS subset NetCDF
+  - numpy
+  - pystac
+  - rio-stac
+  - fsspec
+  - boto3
+  - backoff
+  - requests
+  - jq
+  - pip
+  - pip:
+    - maap-py
+    # Copernicus Marine toolbox — credentialed server-side subset of the
+    # ocean-current dataset. Reading the NetCDF is via xarray/netcdf4, so no
+    # GDAL netCDF plugin is needed.
+    - copernicusmarine

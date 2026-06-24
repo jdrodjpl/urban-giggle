@@ -1,0 +1,52 @@
+name: Daily CMEMS Zarr ingest
+
+# Syncs two CMEMS Zarr time series (ocean_u / ocean_v) with the current COG
+# state in S3. Reuses the data-agnostic Zarr worker (frozon-iss-ingest-zarr)
+# and the env-parameterized runner scripts/submit_zarr_pipeline.py — no new
+# algorithm registration. One matrix job per variable (independent Zarr stores),
+# so a failure in one doesn't block the other.
+
+on:
+  schedule:
+    # 13:30 UTC — after the CMEMS COG cron (07:15), and 30 min off the ECMWF
+    # Zarr cron (13:00) / OSI SAF Zarr (12:30) / S1 Zarr (12:00).
+    - cron: "30 13 * * *"
+  workflow_dispatch:
+
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - product: ocean_u
+            cog_collection_id: frozon-cmems-ocean-u-daily
+            zarr_collection_id: frozon-cmems-ocean-u-zarr
+          - product: ocean_v
+            cog_collection_id: frozon-cmems-ocean-v-daily
+            zarr_collection_id: frozon-cmems-ocean-v-zarr
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+
+      - name: Install dependencies
+        # boto3 for COG listing; xarray + zarr + s3fs to read the existing
+        # Zarr's time coord from S3; maap-py for submitJob + workspace creds.
+        run: pip install maap-py boto3 xarray zarr s3fs
+
+      - name: Sync ${{ matrix.product }} Zarr to COG state
+        env:
+          MAAP_TOKEN: ${{ secrets.MAAP_TOKEN }}
+          MAAP_HOST: "api.maap-project.org"
+          COG_COLLECTION_ID: ${{ matrix.cog_collection_id }}
+          ZARR_COLLECTION_ID: ${{ matrix.zarr_collection_id }}
+          # CMEMS COG filenames are <collection>_YYYYMMDD_COG.tif — the date
+          # sits directly before _COG (no "_daily_" segment).
+          TIME_REGEX: '_(?P<start_date>\d{8})_COG'
+          # CMEMS COGs are tiny (~MB); the 32vcpu mosaic queue is overkill.
+          QUEUE: "maap-dps-worker-8gb"
+        run: python scripts/submit_zarr_pipeline.py

@@ -1,0 +1,73 @@
+algorithm_description: Frozon CMEMS ocean-current ingest worker — credentialed Copernicus Marine subset of one daily-mean surface current component (eastward uo | northward vo) from GLOBAL_ANALYSISFORECAST_PHY_001_024, cropped to the Arctic and surface layer, reprojected to the canonical EPSG:3413 grid, written as a COG and uploaded to S3.
+algorithm_name: frozon-iss-ingest-cmems
+algorithm_version: v1
+build_command: urban-giggle/.maap/ingest-cmems/build.sh
+disk_space: 20GB
+docker_container_url: mas.maap-project.org/root/maap-workspaces/custom_images/maap_base:v4.2.0
+inputs:
+  config: []
+  file: []
+  positional:
+  - default: ""
+    description: CMEMS ocean-current component — one of ocean_u (uo) | ocean_v (vo).
+    name: product
+    required: true
+  - default: ""
+    description: Daily-mean date YYYYMMDD.
+    name: date
+    required: true
+  - default: "cmems_mod_glo_phy-cur_anfc_0.083deg_P1D-m"
+    description: CMEMS dataset id (default — daily-mean surface currents, 1/12° global).
+    name: dataset_id
+    required: false
+  - default: "copernicus-marine-frozon"
+    description: MAAP secret holding the two-line Copernicus Marine username\npassword.
+    name: cmems_secret_name
+    required: false
+  - default: "-180,20,180,90"
+    description: Subset crop minlon,minlat,maxlon,maxlat (Arctic + margin for the EPSG:3413 corners).
+    name: bbox
+    required: false
+  - default: "0"
+    description: Minimum depth (m) for the surface-layer subset.
+    name: min_depth
+    required: false
+  - default: "1"
+    description: Maximum depth (m) — the ~0.49 m surface layer sits in [0,1].
+    name: max_depth
+    required: false
+  - default: ""
+    description: STAC collection ID / S3 folder. Defaults to the per-product collection (frozon-cmems-ocean-{u,v}-daily) when blank.
+    name: collection_id
+    required: false
+  - default: ""
+    description: Target S3 bucket for the COG output.
+    name: s3_bucket
+    required: true
+  - default: ""
+    description: Optional S3 prefix within the output bucket.
+    name: s3_prefix
+    required: false
+  - default: ""
+    description: AWS IAM Role ARN to assume for S3 write (optional — defaults to worker's identity).
+    name: role_arn
+    required: false
+  - default: DEFLATE
+    description: COG compression method (DEFLATE, LZW, JPEG, WEBP, NONE).
+    name: compress
+    required: false
+  - default: "512"
+    description: COG tile block size (256, 512, 1024).
+    name: blocksize
+    required: false
+  - default: "512"
+    description: GDAL_CACHEMAX in MB for the COG conversion subprocess (files are tiny — 512 is ample).
+    name: max_memory
+    required: false
+  - default: "false"
+    description: Overwrite existing local COG output (S3 dedupe is enforced runner-side).
+    name: overwrite
+    required: false
+queue: maap-dps-worker-8gb
+repository_url: https://github.com/jdrodjpl/urban-giggle.git
+run_command: urban-giggle/.maap/ingest-cmems/run-ingest-cmems.sh

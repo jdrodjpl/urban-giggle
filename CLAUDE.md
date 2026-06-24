@@ -48,6 +48,7 @@ acquisition date at a time.
 .maap/ingest-s1grd/run-ingest-s1grd.sh    # S1 GRD HH+HV worker (per acquisition date)
 .maap/ingest-osisaf/run-ingest-osisaf.sh  # OSI-SAF worker
 .maap/ingest-ecmwf/run-ingest-ecmwf.sh    # ECMWF Open Data worker (airtemp + 10m wind)
+.maap/ingest-cmems/run-ingest-cmems.sh    # CMEMS ocean-current worker (uo + vo; credentialed)
 .maap/ingest-zarr/run-ingest-zarr.sh      # Zarr sync worker (used by Zarr cron)
 ```
 
@@ -154,6 +155,7 @@ Zarr: S3 inputs → worker (download existing Zarr → fresh/append/rebuild
 - `.maap/ingest-s1grd/`  — build + run for the Sentinel-1 GRD HH+HV worker
 - `.maap/ingest-osisaf/` — build + run for the OSI-SAF worker
 - `.maap/ingest-ecmwf/`  — build + run for the ECMWF Open Data worker
+- `.maap/ingest-cmems/`  — build + run for the CMEMS ocean-current worker (credentialed)
 - `.maap/ingest-zarr/`   — build + run for the Zarr sync worker
 - `.maap/sample-algo-configs/*.yml` — register-able algorithm definitions.
   See `PIPELINE_TEMPLATE.md` for the recipe to add another source.
