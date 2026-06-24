@@ -256,6 +256,21 @@ these are baseline.
     blew through 200 GB on first-build. The same lesson — design for
     bounded disk regardless of YAML requests.
 
+11. **Don't materialize a full slice in numpy when the input is
+    grid-sized.** The first implementation of `append_in_place` (in
+    `src/ingest_zarr.py`) allocated a `np.full((grid_height,
+    grid_width), np.nan, dtype=np.float32)` buffer per slice so it
+    could place a small per-granule TIFF into the right sub-region.
+    Fine for per-granule inputs (~50km×50km), catastrophic for
+    full-Arctic per-day COGs — one slice is 136535×145704×4 bytes
+    = 74 GiB, more than the worker has. Pattern that works regardless
+    of input size: open the Zarr's data array via `zarr.open(...,
+    mode='a')`, resize by +1 along the time axis, then stream the
+    source TIFF via `rasterio.Window` reads tile-by-tile (sized to
+    match the Zarr's spatial chunk) and assign each tile directly
+    into the matching `data_array[t_idx, gy0:gy1, gx0:gx1]` region.
+    Peak in-flight memory is one tile (~16 MB) not one slice.
+
 ## Patterns worth knowing
 
 These aren't gotchas but they save time:
