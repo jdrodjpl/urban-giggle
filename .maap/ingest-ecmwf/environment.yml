@@ -1,0 +1,25 @@
+name: ingest
+channels:
+  - conda-forge
+dependencies:
+  - python>=3.11
+  - gdal
+  # conda-forge GDAL 3.9+ ships format drivers as separate plugin packages;
+  # the GRIB driver (gdal_GRIB.so) is NOT pulled in by `gdal` alone and is
+  # required to read the ECMWF Open Data GRIB2 messages (same lesson as the
+  # OSI SAF worker's libgdal-netcdf).
+  - libgdal-grib
+  - rasterio
+  - numpy
+  - pystac
+  - rio-stac
+  - fsspec
+  - boto3
+  - backoff
+  - requests
+  - jq
+  - pip
+  - pip:
+    - maap-py
+    # Anonymous byte-range retrieval from the ECMWF Open Data feed.
+    - ecmwf-opendata

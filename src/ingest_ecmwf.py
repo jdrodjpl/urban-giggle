@@ -1,0 +1,391 @@
+"""Worker: ingest one ECMWF Open Data near-surface field (2 m air temperature,
+10 m northward wind, 10 m eastward wind) for one date into a single COG in the
+canonical EPSG:3413 Arctic grid.
+
+ECMWF Open Data is the free real-time IFS forecast feed (https://data.ecmwf.int).
+Like OSI SAF — and unlike the OPERA / S1 sources this repo started with — it is
+**not** on NASA CMR and needs no Earthdata Login:
+
+  * Distribution: anonymous HTTP. We use the `ecmwf-opendata` client, which
+    reads the per-run `.index` and pulls only the GRIB messages we ask for via
+    byte-range requests — so a single-variable retrieve is a few MB even though
+    the full step-0 file carries every parameter.
+  * One GRIB message == one full 0.25° global grid already, so there is no
+    mosaic step — just extract the field, roll it onto a clean −180..180 grid,
+    reproject, COG-ify.
+
+We ingest the **step-0 (T+0 analysis) field of the 00 UTC oper HRES run** as the
+daily snapshot: one global grid per variable per day, valid 00:00 UTC.
+
+Per (product, date) the worker:
+
+  1. Retrieve the single-parameter GRIB2 (anonymous byte-range via ecmwf-opendata).
+  2. Extract the field to a GeoTIFF. ECMWF's global grid is published with
+     longitudes 0..360; we roll it onto a clean −180..180 EPSG:4326 grid so the
+     downstream warp has no antimeridian seam. (Mirrors OSI SAF's "force the
+     clean source grid" step.)
+  3. Reproject (gdalwarp) EPSG:4326 -> canonical EPSG:3413 10 km Arctic grid —
+     the *same* grid OSI SAF / S1 land on, so every Frozon collection co-registers.
+     All three products are continuous fields -> bilinear.
+  4. COG-ify (reuse cog_helpers.convert_to_cog_lowmem).
+  5. Upload the COG to its dated S3 key. No STAC catalog is written — like OSI
+     SAF, nothing in this pipeline consumes one and the units live in the COG
+     band metadata.
+
+Value semantics (see DATA_ECMWF.md):
+  * airtemp : 2 m temperature, Float32 Kelvin (native; no conversion), NoData NaN.
+  * wind_ns : 10 m northward (V) wind component, Float32 m s-1, NoData NaN.
+  * wind_ew : 10 m eastward (U) wind component, Float32 m s-1, NoData NaN.
+
+NOTE: ocean-current U/V are intentionally absent — ECMWF Open Data's real-time
+feed does not publish surface ocean currents (they live in MARS / Copernicus
+Marine). See DATA_ECMWF.md.
+"""
+
+from __future__ import annotations
+
+import argparse
+import logging
+import shutil
+import subprocess
+import sys
+from datetime import datetime, timezone
+from pathlib import Path
+from typing import Optional
+
+import numpy as np
+import rasterio
+from rasterio.transform import Affine
+
+import cog_helpers  # reuse convert_to_cog_lowmem / build_dated_s3_key / upload
+from common_utils import AWSUtils  # noqa: F401  (parity; uploads go via cog_helpers)
+
+logger = logging.getLogger("ingest_ecmwf")
+logging.basicConfig(level=logging.INFO,
+                    format="%(asctime)s - %(name)s - %(levelname)s - %(message)s")
+
+
+# --------------------------------------------------------------------------
+# Grid + product constants
+# --------------------------------------------------------------------------
+
+# Source: ECMWF Open Data is plain geographic WGS84 (regular lat/lon).
+SRC_EPSG = "EPSG:4326"
+# Target: WGS84 polar stereographic (Frozon canonical Arctic grid).
+TGT_EPSG = "EPSG:3413"
+
+# Canonical EPSG:3413 target grid — identical to src/ingest_osisaf.py so ECMWF
+# COGs co-register pixel-for-pixel with the sea-ice collections and stack cleanly
+# in the Zarr. te is minx,miny,maxx,maxy; tr is 10 km -> a clean 760x1120 raster.
+TGT_TE = (-3850000.0, -5350000.0, 3750000.0, 5850000.0)
+TGT_RES = 10000.0
+
+# Per-product configuration. `param` is the ECMWF Open Data short name selected
+# from the step-0 oper file; the rest drive value handling + STAC/COG naming.
+# All three are continuous near-surface analysis fields -> bilinear / Float32.
+PRODUCTS = {
+    "airtemp": {
+        "param": "2t",                # 2 m temperature
+        "long_name": "atmospheric_temperature",
+        # The Open Data feed delivers 2t in degrees Celsius (validated against
+        # the live feed 2026-06: equatorial ~29, Sahara ~34), not the Kelvin
+        # the ECMWF parameter DB documents. We pass values through unchanged.
+        "units": "degC",
+        "default_collection": "frozon-ecmwf-airtemp-daily",
+    },
+    "wind_ns": {
+        "param": "10v",               # 10 m northward (meridional, V) wind
+        "long_name": "wind_direction_ns",
+        "units": "m s-1",
+        "default_collection": "frozon-ecmwf-wind-ns-daily",
+    },
+    "wind_ew": {
+        "param": "10u",               # 10 m eastward (zonal, U) wind
+        "long_name": "wind_direction_ew",
+        "units": "m s-1",
+        "default_collection": "frozon-ecmwf-wind-ew-daily",
+    },
+}
+
+WARP_RESAMPLING = "bilinear"   # gdalwarp -r (continuous fields)
+COG_RESAMPLING = "bilinear"    # gdal_translate -r
+OVR_RESAMPLING = "average"     # overview build
+
+
+# --------------------------------------------------------------------------
+# Retrieve
+# --------------------------------------------------------------------------
+
+class NotPublishedError(Exception):
+    """The requested run/step is not (yet) on the Open Data feed."""
+
+
+def retrieve_grib(product: str, date_yyyymmdd: str, run_time: int, step: int,
+                  dest: Path, resol: str = "0p25") -> Path:
+    """Pull the single-parameter GRIB2 for (product, date, time, step) from the
+    ECMWF Open Data feed via the `ecmwf-opendata` client (anonymous byte-range).
+
+    Raises NotPublishedError if the run isn't on the feed (so the caller can
+    distinguish "not landed yet" from a real failure)."""
+    from ecmwf.opendata import Client
+
+    cfg = PRODUCTS[product]
+    dest.parent.mkdir(parents=True, exist_ok=True)
+    if dest.exists():
+        dest.unlink()
+
+    client = Client(source="ecmwf", model="ifs", resol=resol)
+    request = dict(
+        date=date_yyyymmdd,
+        time=run_time,
+        step=step,
+        stream="oper",
+        type="fc",
+        param=cfg["param"],
+        target=str(dest),
+    )
+    logger.info(f"ecmwf-opendata retrieve {product} ({cfg['param']}): "
+                f"date={date_yyyymmdd} time={run_time:02d} step={step} resol={resol}")
+    try:
+        client.retrieve(**request)
+    except Exception as e:  # noqa: BLE001
+        # The client raises a plain Exception on a missing run (404 on the
+        # .index / data file). Treat that as "not published"; re-raise anything
+        # that already produced a file as a hard error below.
+        msg = str(e).lower()
+        if "not found" in msg or "404" in msg or "no index" in msg or "no data" in msg:
+            raise NotPublishedError(
+                f"ECMWF Open Data run not published: {product} {date_yyyymmdd} "
+                f"{run_time:02d}z step {step} ({e})"
+            ) from e
+        raise
+
+    if not dest.exists() or dest.stat().st_size < 1024:
+        raise NotPublishedError(
+            f"ECMWF Open Data retrieve produced no data for {product} "
+            f"{date_yyyymmdd} {run_time:02d}z step {step} "
+            f"(param {cfg['param']} likely absent from this run)"
+        )
+    logger.info(f"Retrieved {dest.name} ({dest.stat().st_size / 1e6:.1f} MB)")
+    return dest
+
+
+# --------------------------------------------------------------------------
+# Extract field -> clean −180..180 EPSG:4326 GeoTIFF -> warp to EPSG:3413
+# --------------------------------------------------------------------------
+
+def extract_variable(grib_path: Path, product: str, out_tiff: Path) -> Path:
+    """Read the single GRIB message and write a Float32 EPSG:4326 GeoTIFF.
+
+    The ecmwf-opendata client returns the global 0.25° grid already on the
+    standard −180..180 longitude convention (origin ≈ −180.125) — confirmed
+    against the live feed (2026-06). In that (normal) case the field is written
+    through unchanged.
+
+    As a defensive fallback, if a source ever arrives on the 0..360 convention
+    (origin ≈ 0), gdalwarp into a polar projection would drop the western
+    hemisphere (negative target longitudes fall outside a 0..360 source). So we
+    detect that case (global extent AND origin near 0) and roll the array onto
+    −180..180. With the −180..180 feed this branch does NOT trigger."""
+    out_tiff.parent.mkdir(parents=True, exist_ok=True)
+
+    with rasterio.open(grib_path) as src:
+        # Single-parameter retrieve -> one message -> band 1.
+        data = src.read(1).astype("float32")
+        transform = src.transform
+        width, height = src.width, src.height
+        src_nodata = src.nodata
+
+    # Mask any GRIB bitmap-missing values to NaN.
+    if src_nodata is not None and not np.isnan(src_nodata):
+        data[data == src_nodata] = np.nan
+
+    # Defensive only: roll iff the source is global AND its origin is near 0
+    # (the 0..360 convention). The ecmwf-opendata feed already gives −180..180
+    # (origin ≈ −180), so this normally does NOT trigger.
+    xres = transform.a
+    ulx = transform.c
+    is_global = abs(width * xres - 360.0) < 1e-3
+    if is_global and ulx > -1.0 and width % 2 == 0:
+        half = width // 2
+        data = np.roll(data, half, axis=1)
+        transform = Affine(transform.a, transform.b, ulx - 180.0,
+                           transform.d, transform.e, transform.f)
+        logger.info(f"Rolled global 0..360 grid -> −180..180 (origin {ulx} -> {ulx - 180.0})")
+    else:
+        logger.info(f"Source grid not rolled (width={width}, xres={xres}, ulx={ulx})")
+
+    profile = {
+        "driver": "GTiff",
+        "height": height,
+        "width": width,
+        "count": 1,
+        "dtype": "float32",
+        "crs": SRC_EPSG,
+        "transform": transform,
+        "nodata": float("nan"),
+        "compress": "DEFLATE",
+        "tiled": True,
+    }
+    with rasterio.open(out_tiff, "w", **profile) as dst:
+        dst.write(data, 1)
+        dst.update_tags(1, units=PRODUCTS[product]["units"],
+                        long_name=PRODUCTS[product]["long_name"],
+                        ecmwf_param=PRODUCTS[product]["param"])
+
+    logger.info(f"Extracted {product} -> {out_tiff.name} "
+                f"(Float32 {SRC_EPSG}, {width}x{height})")
+    return out_tiff
+
+
+def warp_to_3413(in_tiff: Path, out_tiff: Path) -> Path:
+    """gdalwarp the clean EPSG:4326 GeoTIFF onto the canonical EPSG:3413 10 km
+    Arctic grid (bilinear; all ECMWF products here are continuous fields)."""
+    out_tiff.parent.mkdir(parents=True, exist_ok=True)
+    if out_tiff.exists():
+        out_tiff.unlink()
+
+    cmd = [
+        "gdalwarp",
+        "-s_srs", SRC_EPSG,
+        "-t_srs", TGT_EPSG,
+        "-te", str(TGT_TE[0]), str(TGT_TE[1]), str(TGT_TE[2]), str(TGT_TE[3]),
+        "-tr", str(TGT_RES), str(TGT_RES),
+        "-r", WARP_RESAMPLING,
+        "-srcnodata", "nan",
+        "-dstnodata", "nan",
+        "-multi",
+        "-wo", "NUM_THREADS=ALL_CPUS",
+        "--config", "GDAL_NUM_THREADS", "ALL_CPUS",
+        "-of", "GTiff", "-overwrite",
+        "-co", "COMPRESS=DEFLATE", "-co", "TILED=YES",
+        str(in_tiff), str(out_tiff),
+    ]
+    logger.info(f"gdalwarp EPSG:4326 -> EPSG:3413 (-r {WARP_RESAMPLING}) -> {out_tiff.name}")
+    r = subprocess.run(cmd, capture_output=True, text=True, timeout=1800)
+    if r.returncode != 0:
+        raise RuntimeError(f"gdalwarp failed for {in_tiff.name}: {r.stderr[-800:]}")
+    return out_tiff
+
+
+# --------------------------------------------------------------------------
+# Entry point
+# --------------------------------------------------------------------------
+
+def main() -> int:
+    p = argparse.ArgumentParser(description=__doc__,
+                                formatter_class=argparse.RawDescriptionHelpFormatter)
+    p.add_argument("--product", required=True, choices=sorted(PRODUCTS),
+                   help="ECMWF Open Data product to ingest")
+    p.add_argument("--date", required=True,
+                   help="Forecast reference date YYYYMMDD")
+    p.add_argument("--time", type=int, default=0, choices=[0, 6, 12, 18],
+                   help="Forecast reference run hour (UTC). Default 0 (00z).")
+    p.add_argument("--step", type=int, default=0,
+                   help="Forecast lead-time step in hours. Default 0 (T+0 analysis).")
+    p.add_argument("--resol", default="0p25",
+                   help="Open Data grid resolution (default 0p25).")
+    p.add_argument("--input-grib", default=None,
+                   help="Local GRIB2 path; skips retrieve (testing).")
+
+    p.add_argument("--collection-id", default=None,
+                   help="STAC collection ID (defaults to the per-product collection)")
+    p.add_argument("--s3-bucket", required=True)
+    p.add_argument("--s3-prefix", default="")
+    p.add_argument("--role-arn", default=None)
+
+    p.add_argument("--compress", default="DEFLATE")
+    p.add_argument("--blocksize", type=int, default=512)
+    p.add_argument("--max-memory", type=int, default=512)
+    p.add_argument("--overwrite", action="store_true")
+    p.add_argument("--output", default="output",
+                   help="DPS-persisted output dir; left empty (the COG goes to S3).")
+    p.add_argument("--scratch-dir", default="scratch",
+                   help="Working dir for the GRIB + intermediate GeoTIFFs + COG. "
+                        "NOT persisted by DPS; deleted on exit unless --keep-scratch.")
+    p.add_argument("--keep-scratch", action="store_true",
+                   help="Keep the scratch dir for debugging.")
+    args = p.parse_args()
+
+    cfg = PRODUCTS[args.product]
+    collection_id = args.collection_id or cfg["default_collection"]
+
+    try:
+        datetime.strptime(args.date, "%Y%m%d")
+    except ValueError:
+        logger.error(f"TERMINATED: --date must be YYYYMMDD, got {args.date!r}")
+        return 6
+
+    out_dir = Path(args.output)
+    out_dir.mkdir(parents=True, exist_ok=True)
+    scratch_dir = Path(args.scratch_dir)
+    scratch_dir.mkdir(parents=True, exist_ok=True)
+
+    try:
+        # --- 1. Resolve + retrieve the GRIB ---
+        if args.input_grib:
+            grib_path = Path(args.input_grib)
+            if not grib_path.exists():
+                raise FileNotFoundError(f"--input-grib not found: {grib_path}")
+        else:
+            grib_path = retrieve_grib(
+                args.product, args.date, args.time, args.step,
+                scratch_dir / "grib" / f"{args.product}_{args.date}.grib2",
+                resol=args.resol)
+
+        # --- 2. Extract field onto the clean −180..180 EPSG:4326 grid ---
+        src_tiff = extract_variable(
+            grib_path, args.product,
+            scratch_dir / "src" / f"{args.product}_{args.date}_4326.tif")
+
+        # --- 3. Reproject to the canonical EPSG:3413 Arctic grid ---
+        warped = warp_to_3413(
+            src_tiff,
+            scratch_dir / "warp" / f"{args.product}_{args.date}_3413.tif")
+
+        # --- 4. COG conversion (reuse) ---
+        cog_name = f"{collection_id}_{args.date}_COG.tif"
+        cog_path = scratch_dir / "cog" / cog_name
+        cog_path.parent.mkdir(parents=True, exist_ok=True)
+        ok, msg = cog_helpers.convert_to_cog_lowmem(
+            input_file=warped,
+            output_file=cog_path,
+            overwrite=True,
+            compress=args.compress,
+            blocksize=args.blocksize,
+            max_memory_mb=args.max_memory,
+            resampling=COG_RESAMPLING,
+            overview_resampling=OVR_RESAMPLING,
+        )
+        logger.info(msg)
+        if not ok:
+            return 2
+
+        # --- 5. Upload the COG to its dated S3 key ---
+        # Date partition comes from the run reference date at its run hour; the
+        # units live in the COG band metadata. No STAC item/catalog is built —
+        # nothing in the ECMWF pipeline consumes one (mirrors OSI SAF).
+        item_dt = datetime.strptime(args.date, "%Y%m%d").replace(
+            hour=args.time, tzinfo=timezone.utc)
+        s3_key = cog_helpers.build_dated_s3_key(
+            args.s3_prefix, collection_id, item_dt, cog_path.name)
+        s3_url = cog_helpers.upload_cog_to_key(
+            cog_path, args.s3_bucket, s3_key, args.role_arn)
+        logger.info(f"ECMWF {args.product} ingest complete: {s3_url}")
+        return 0
+
+    except (NotPublishedError, FileNotFoundError) as e:
+        # Not published / missing input — distinct exit code so the runner can
+        # tell "not landed yet" apart from a real failure.
+        logger.error(f"TERMINATED: {e}")
+        return 6
+    except Exception as e:  # noqa: BLE001
+        logger.error(f"TERMINATED: unexpected error: {e}", exc_info=True)
+        return 1
+    finally:
+        if not args.keep_scratch:
+            shutil.rmtree(scratch_dir, ignore_errors=True)
+
+
+if __name__ == "__main__":
+    sys.exit(main())

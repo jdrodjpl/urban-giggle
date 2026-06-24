@@ -1,0 +1,53 @@
+name: Daily ECMWF near-surface ingest
+
+on:
+  schedule:
+    # 07:00 UTC — 15-min offset from the OSI SAF cron (06:45) and well clear of
+    # S1 GRD (06:30) / OPERA (06:15) to space out MAAP DPS queue contention.
+    # The 00z oper run is reliably published a few hours after 00 UTC.
+    - cron: "0 7 * * *"
+  workflow_dispatch:
+    inputs:
+      products:
+        description: "Which ECMWF products to ingest (comma-separated subset of airtemp,wind_ns,wind_ew)."
+        default: "airtemp,wind_ns,wind_ew"
+      lookback_days:
+        description: "Max days to walk back probing the Open Data feed for published files."
+        default: "7"
+      ingest_last_n_complete_days:
+        description: "How many recent existing dates to ingest per product per run (feed retains ~4 days)."
+        default: "4"
+      drop_newest:
+        description: "Drop the N newest dates (0 = keep all; step-0 analysis is final on publish)."
+        default: "0"
+      retain_days:
+        description: "Keep the N most recent acquisition-date folders in S3 per collection."
+        default: "14"
+
+jobs:
+  submit:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+
+      - name: Install dependencies
+        # requests for the Open Data existence checks; boto3 for S3 retention /
+        # pre-check; maap-py for submitJob + workspace credentials. (No
+        # ecmwf-opendata needed here — discovery is a plain HEAD on the public
+        # GRIB URL; the worker does the byte-range retrieve.)
+        run: pip install maap-py boto3 requests
+
+      - name: Discover ECMWF dates, prune old COGs, submit worker jobs
+        env:
+          MAAP_TOKEN: ${{ secrets.MAAP_TOKEN }}
+          MAAP_HOST: "api.maap-project.org"
+          PRODUCTS: ${{ github.event.inputs.products || 'airtemp,wind_ns,wind_ew' }}
+          LOOKBACK_DAYS: ${{ github.event.inputs.lookback_days || '7' }}
+          INGEST_LAST_N_COMPLETE_DAYS: ${{ github.event.inputs.ingest_last_n_complete_days || '4' }}
+          DROP_NEWEST: ${{ github.event.inputs.drop_newest || '0' }}
+          RETAIN_DAYS: ${{ github.event.inputs.retain_days || '14' }}
+        run: python scripts/submit_ecmwf_pipeline.py
