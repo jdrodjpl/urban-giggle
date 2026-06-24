@@ -57,8 +57,6 @@ DEFAULTS = {
     # Discovery window. Open Data retains ~4 days, so keep the window tight.
     "LOOKBACK_DAYS":              "7",
     "INGEST_LAST_N_COMPLETE_DAYS": "4",
-    # Open Data step-0 analysis is final on publish, so by default keep the newest.
-    "DROP_NEWEST":                "0",
     # Worker tuning.
     "COMPRESS":                   "DEFLATE",
     "BLOCKSIZE":                  "512",
@@ -111,11 +109,11 @@ def file_exists(url: str) -> bool:
 
 def discover_dates() -> list[str]:
     """Walk back day-by-day, returning the most recent existing dates
-    (newest-first), up to INGEST_LAST_N_COMPLETE_DAYS + DROP_NEWEST.
+    (newest-first), up to INGEST_LAST_N_COMPLETE_DAYS.
 
     Product-independent: the oper step-0 file holds every parameter."""
     lookback = int(env("LOOKBACK_DAYS"))
-    want = int(env("INGEST_LAST_N_COMPLETE_DAYS")) + int(env("DROP_NEWEST"))
+    want = int(env("INGEST_LAST_N_COMPLETE_DAYS"))
     today = datetime.now(timezone.utc).date()
     print(f"walking back from {today.isoformat()} (≤{lookback}d), "
           f"collecting {want} existing date(s).")
@@ -240,14 +238,10 @@ def main() -> int:
         return 1
 
     s3 = _maap_s3_client(maap)
-    drop_newest = int(env("DROP_NEWEST"))
     last_n = int(env("INGEST_LAST_N_COMPLETE_DAYS"))
 
     # Discovery is product-independent (one step-0 file holds every parameter).
     dates = discover_dates()
-    if drop_newest and dates:
-        dropped, dates = dates[:drop_newest], dates[drop_newest:]
-        print(f"dropped newest {drop_newest}: {dropped}")
     candidates = dates[:last_n]
     if not candidates:
         print("no dates discovered on the Open Data feed. Nothing to do.")
