@@ -207,22 +207,29 @@ def union_bounds(a: dict, b: dict) -> dict:
 def append_in_place(local_zarr: Path, new_tiffs: List[Path],
                    time_regex: Optional[str]) -> None:
     """Append new TIFFs as time slices to an existing Zarr that already
-    contains them spatially. Uses xarray's append-along-time mode.
+    contains them spatially.
 
-    Each TIFF becomes one slice on the existing grid. Inputs whose
-    spatial extent doesn't exactly match the existing grid are clipped
-    using the same translate-to-grid logic the streaming script uses;
-    partial-overlap clipping is correct because we've already verified
-    bounds containment before calling this."""
+    For each new TIFF, opens the Zarr's underlying data array directly
+    (zarr.open), resizes to add one more time slot, then streams the
+    TIFF in via rasterio `Window` reads — one spatial chunk-tile at a
+    time — and assigns each tile into the Zarr's matching `(t, y, x)`
+    slice. Peak in-flight memory is one tile (~16 MB for 2048×2048
+    Float32), not one slice (75+ GiB for a full-Arctic mosaic).
+
+    Earlier versions of this function pre-allocated a full-grid NaN
+    buffer per slice and used xarray's `to_zarr(append_dim='time')`.
+    That works for small per-granule inputs but blows the worker's
+    RAM on full-Arctic per-day COGs.
+    """
+    import rasterio.windows
+    import zarr
+
+    # Coord/grid metadata — same fallback logic as before.
     existing = xr.open_zarr(str(local_zarr), consolidated=False, decode_times=True)
     grid_x = existing.coords['x'].values
     grid_y = existing.coords['y'].values
     existing.close()
 
-    # Prefer attrs read via direct zarr API (xr.open_zarr can miss zarr-v3
-    # root attrs in some env combos); fall back to deriving from coords if
-    # the attrs are genuinely absent. bzss writes coord convention as
-    # x_coords[0] = bounds_west (left edge), y_coords[0] = bounds_north (top).
     attrs = zarr_io.read_existing_zarr_attrs(local_zarr)
     if all(k in attrs for k in ('resolution', 'bounds_west', 'bounds_north')):
         resolution = float(attrs['resolution'])
@@ -242,53 +249,103 @@ def append_in_place(local_zarr: Path, new_tiffs: List[Path],
     grid_height = len(grid_y)
     grid_width = len(grid_x)
 
-    new_slices: List[np.ndarray] = []
-    new_times: List[datetime] = []
+    # Open the Zarr arrays for in-place mutation.
+    try:
+        store = zarr.open_consolidated(str(local_zarr), mode='a')
+    except (KeyError, ValueError):
+        store = zarr.open(str(local_zarr), mode='a')
+    data_array = store['data']
+    time_array = store['time']
+
+    # Tile size for the streaming write. We prefer the Zarr's existing
+    # spatial chunk size so each write hits exactly one chunk file —
+    # avoids read-modify-write churn. Fall back to 2048 if we can't tell.
+    chunks = getattr(data_array, 'chunks', None)
+    tile_size = chunks[1] if chunks and len(chunks) >= 2 else 2048
 
     for tiff in new_tiffs:
         dt = bzss.extract_datetime_from_filename(tiff.name, time_regex=time_regex)
         if dt is None:
             dt = datetime.fromtimestamp(tiff.stat().st_mtime, tz=timezone.utc)
 
-        slice_arr = np.full((grid_height, grid_width), np.nan, dtype=np.float32)
         with rasterio.open(str(tiff)) as src:
             file_bounds = src.bounds
             file_height, file_width = src.height, src.width
-            data = src.read(1).astype(np.float32)
             file_grid_y_start = int(np.round((grid_north - file_bounds.top) / resolution))
             file_grid_x_start = int(np.round((file_bounds.left - grid_west) / resolution))
 
-            grid_y0 = max(0, file_grid_y_start)
-            grid_x0 = max(0, file_grid_x_start)
-            grid_y1 = min(grid_height, file_grid_y_start + file_height)
-            grid_x1 = min(grid_width, file_grid_x_start + file_width)
-            src_y0 = max(0, -file_grid_y_start)
-            src_x0 = max(0, -file_grid_x_start)
-            src_y1 = src_y0 + (grid_y1 - grid_y0)
-            src_x1 = src_x0 + (grid_x1 - grid_x0)
+            # If the file is entirely outside the grid, nothing to append
+            # (still need to add the slice slot + time; user can decide
+            # what to do with the NaN slice). For our pipelines the file
+            # IS the grid so this is the common path.
+            grid_y_end = file_grid_y_start + file_height
+            grid_x_end = file_grid_x_start + file_width
+            entirely_outside = (
+                grid_y_end <= 0 or file_grid_y_start >= grid_height
+                or grid_x_end <= 0 or file_grid_x_start >= grid_width
+            )
 
-            if grid_y0 < grid_y1 and grid_x0 < grid_x1:
-                slice_arr[grid_y0:grid_y1, grid_x0:grid_x1] = (
-                    data[src_y0:src_y1, src_x0:src_x1]
+            # Grow the data + time arrays by one along the time axis.
+            new_t_idx = data_array.shape[0]
+            data_array.resize((new_t_idx + 1, grid_height, grid_width))
+            time_array.resize((new_t_idx + 1,))
+
+            # Time coord — store as ns-resolution datetime64.
+            try:
+                ts = np.datetime64(dt.replace(tzinfo=None), 'ns')
+            except Exception:
+                ts = np.datetime64(int(dt.timestamp() * 1e9), 'ns')
+            time_array[new_t_idx] = ts
+
+            if entirely_outside:
+                logger.warning(
+                    f"append_in_place: {tiff.name} entirely outside Zarr grid; "
+                    f"appended a NaN slice for {dt.isoformat()}"
                 )
+                continue
 
-        new_slices.append(slice_arr)
-        new_times.append(dt)
+            # Stream tile-by-tile from source TIFF directly into Zarr.
+            # rasterio's Window reads only the pixels we ask for.
+            tiles_written = 0
+            for src_y0 in range(0, file_height, tile_size):
+                src_y_extent = min(tile_size, file_height - src_y0)
+                for src_x0 in range(0, file_width, tile_size):
+                    src_x_extent = min(tile_size, file_width - src_x0)
+
+                    # Where does this tile land on the global grid?
+                    gy0 = file_grid_y_start + src_y0
+                    gx0 = file_grid_x_start + src_x0
+                    gy1 = gy0 + src_y_extent
+                    gx1 = gx0 + src_x_extent
+
+                    # Clip against grid extent.
+                    in_src_y0 = max(0, -gy0)
+                    in_src_x0 = max(0, -gx0)
+                    in_src_y1 = src_y_extent - max(0, gy1 - grid_height)
+                    in_src_x1 = src_x_extent - max(0, gx1 - grid_width)
+                    if in_src_y0 >= in_src_y1 or in_src_x0 >= in_src_x1:
+                        continue
+
+                    gy0_c = max(0, gy0)
+                    gx0_c = max(0, gx0)
+                    gy1_c = gy0_c + (in_src_y1 - in_src_y0)
+                    gx1_c = gx0_c + (in_src_x1 - in_src_x0)
+
+                    window = rasterio.windows.Window(
+                        src_x0 + in_src_x0,
+                        src_y0 + in_src_y0,
+                        in_src_x1 - in_src_x0,
+                        in_src_y1 - in_src_y0,
+                    )
+                    tile = src.read(1, window=window).astype(np.float32, copy=False)
+                    data_array[new_t_idx, gy0_c:gy1_c, gx0_c:gx1_c] = tile
+                    tiles_written += 1
+
+            logger.info(
+                f"Appended {tiff.name} as t={new_t_idx} ({dt.isoformat()}); "
+                f"streamed {tiles_written} tile(s) of ≤{tile_size}×{tile_size}"
+            )
         gc.collect()
-
-    if not new_slices:
-        logger.warning("append_in_place: no new slices to append")
-        return
-
-    new_data = np.stack(new_slices, axis=0)
-    new_time = np.array(new_times, dtype='datetime64[ns]')
-
-    new_ds = xr.Dataset(
-        {'data': (('time', 'y', 'x'), new_data)},
-        coords={'time': new_time, 'y': grid_y, 'x': grid_x},
-    )
-    new_ds.to_zarr(str(local_zarr), mode='a', append_dim='time', consolidated=True)
-    logger.info(f"Appended {len(new_slices)} slice(s) in place to {local_zarr}")
 
 
 def sync_zarr(args: argparse.Namespace,
