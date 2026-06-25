@@ -1,6 +1,8 @@
 #!/usr/bin/env bash
 # Build script for the OSI SAF sea-ice ingest worker.
-# BUILD_BUST=2026-06-18-2  ← bump to force a fresh Docker build.
+# BUILD_BUST=2026-06-25-1  ← bump to force a fresh Docker build.
+#   (Deployed v1 ran new worker code on an old conda env that cache-hit the
+#   libgdal-netcdf-less layer; bumping forces conda env create/update to re-run.)
 #
 # Leaner env than the OPERA/S1 workers: OSI SAF is anonymous HTTP (no
 # earthaccess/asf-search/EDL) and NetCDF-direct via GDAL (no scipy
