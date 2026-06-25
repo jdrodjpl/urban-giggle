@@ -1,5 +1,8 @@
 #!/usr/bin/env bash
 # Build script for the Zarr ingest worker.
+# BUILD_BUST=2026-06-25-1  ← bump to force a fresh Docker/conda rebuild.
+#   (The deployed v3 image predated `zarr>=3` in environment.yml; bumping this
+#   busts the build-layer cache so `conda env update` actually re-runs.)
 #
 # Uses conda env update because the geospatial stack (rasterio, gdal,
 # rioxarray, pyproj, zarr) needs coordinated C-library versions that
