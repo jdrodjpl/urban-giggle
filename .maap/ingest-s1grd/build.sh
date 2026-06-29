@@ -1,6 +1,8 @@
 #!/usr/bin/env bash
 # Build script for the Sentinel-1 GRD ingest worker.
-# BUILD_BUST=2026-06-15-1  ← bump to force a fresh Docker build.
+# BUILD_BUST=2026-06-29-1  ← bump to force a fresh Docker build.
+#   (Deployed v1 ran current worker source on a stale conda layer missing
+#   scipy; bumping forces conda env create/update to re-run. Smoke-import gates.)
 #
 # Same conda env shape as the OPERA worker (rasterio + gdal + boto3 +
 # earthaccess) plus scipy (for RegularGridInterpolator in the σ⁰
