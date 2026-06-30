@@ -57,6 +57,26 @@ logging.basicConfig(level=logging.INFO,
                     format="%(asctime)s - %(name)s - %(levelname)s - %(message)s")
 
 
+# Fixed EPSG:3413 grid for every daily mosaic COG. Chosen so:
+#   - ±3,400,000 m comfortably covers the 60°N circle (radius ~3,330 km
+#     from the pole in this projection); margin lets us catch granules
+#     whose footprint stretches a few km past 60°.
+#   - Bounds divide cleanly into 40 m pixels (170,000 px per side, exact).
+#   - All daily COGs across the time series share identical bounds and
+#     pixel alignment, so naive per-pixel stacking outside the Zarr just
+#     works. (Inside the Zarr, the same grid means append_in_place can
+#     direct-copy tiles instead of resampling.)
+# Per-granule reprojects only get -tap (snap to grid, but keep the
+# per-granule footprint compact) — the full ±3.4M extent is only forced
+# at the mosaic step so we don't blow up disk with thousands of mostly-
+# NaN intermediate tiffs.
+FIXED_ARCTIC_BOUNDS_EPSG3413 = (
+    -3_400_000.0, -3_400_000.0,   # xmin, ymin
+     3_400_000.0,  3_400_000.0,   # xmax, ymax
+)
+FIXED_RESOLUTION_M = 40.0
+
+
 # --------------------------------------------------------------------------
 # Granule discovery (when worker is asked to re-query CMR itself)
 # --------------------------------------------------------------------------
@@ -134,19 +154,26 @@ def download_granule_via_asf(url: str, dest_dir: Path,
 
 
 def reproject_to_3413(in_tiff: Path, out_tiff: Path,
-                      resolution_m: float = 40.0) -> Path:
+                      resolution_m: float = FIXED_RESOLUTION_M) -> Path:
     """gdalwarp the GCP-bearing intermediate σ⁰ TIFF to EPSG:3413.
 
     `-order 2` forces a 2nd-order polynomial fit to the GCPs instead of
     letting GDAL auto-pick (which often selects TPS for 400+ GCPs — TPS
     is much slower and was timing out at 30 min on the worker even
     though the Jupyter test ran in 10 sec).
+
+    `-tap` (target aligned pixels) snaps the output bounds to a clean
+    multiple of `resolution_m`. We deliberately don't pass `-te` here
+    — per-granule outputs keep their natural footprint to avoid every
+    intermediate tiff being a 170k×170k mostly-NaN raster. The fixed
+    full-Arctic extent gets applied at the mosaic step instead.
     """
     out_tiff.parent.mkdir(parents=True, exist_ok=True)
     cmd = [
         "gdalwarp",
         "-t_srs", "EPSG:3413",
         "-tr", str(resolution_m), str(resolution_m),
+        "-tap",
         "-r", "nearest",
         "-order", "2",
         "-multi",
@@ -398,8 +425,9 @@ def main() -> int:
         mosaic_path = scratch_dir / f"{cid}_{args.mosaic_date}_daily.tif"
         cog_helpers.mosaic_tiffs(geocoded, mosaic_path,
                                  target_crs="EPSG:3413",
-                                 target_res=40.0,
-                                 nodata=float("nan"))
+                                 target_res=FIXED_RESOLUTION_M,
+                                 nodata=float("nan"),
+                                 target_extent=FIXED_ARCTIC_BOUNDS_EPSG3413)
 
         cog_path = scratch_dir / f"{cid}_{args.mosaic_date}_daily_COG.tif"
         ok, msg = cog_helpers.convert_to_cog_lowmem(

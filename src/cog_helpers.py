@@ -162,7 +162,8 @@ def convert_to_cog_lowmem(
 def mosaic_tiffs(tiffs: List[Path], output_path: Path,
                  target_crs: str = "EPSG:3413",
                  target_res: float = 30.0,
-                 nodata: Optional[float] = None) -> Path:
+                 nodata: Optional[float] = None,
+                 target_extent: Optional[tuple] = None) -> Path:
     """Mosaic + reproject to `target_crs` via gdalwarp.
 
     Defaults to EPSG:3413 (Arctic Polar Stereographic) since OPERA RTC
@@ -170,15 +171,27 @@ def mosaic_tiffs(tiffs: List[Path], output_path: Path,
     so we let gdalwarp do reprojection + merge in one pass. For
     non-polar use cases, pass a different target_crs.
 
-    Single-input case copies through without reprojection.
+    When `target_extent=(xmin, ymin, xmax, ymax)` is provided, the
+    output is forced to those bounds via `-te`, snapped to a clean
+    multiple of `target_res` via `-tap`. Use this when downstream
+    consumers want every COG on a shared fixed grid (e.g. per-pixel
+    time-series stacking outside the Zarr). Areas inside the extent
+    not covered by any input fill with `nodata`. Default extent is
+    the natural union of inputs.
+
+    Single-input + no `target_extent` case copies through without
+    reprojection. With `target_extent`, we always gdalwarp so the
+    output is guaranteed on-grid even for one-input days.
     """
-    if len(tiffs) == 1:
+    if len(tiffs) == 1 and target_extent is None:
         shutil.copy2(str(tiffs[0]), str(output_path))
         return output_path
 
     logger.info(
         f"Mosaicking {len(tiffs)} TIFF(s) via gdalwarp "
-        f"→ {target_crs} @ {target_res}m → {output_path}"
+        f"→ {target_crs} @ {target_res}m"
+        + (f" extent={target_extent}" if target_extent else "")
+        + f" → {output_path}"
     )
 
     if output_path.exists():
@@ -197,6 +210,12 @@ def mosaic_tiffs(tiffs: List[Path], output_path: Path,
         "-co", "BIGTIFF=IF_SAFER",
         "-co", "TILED=YES",
     ]
+    if target_extent is not None:
+        cmd += [
+            "-te", str(target_extent[0]), str(target_extent[1]),
+                   str(target_extent[2]), str(target_extent[3]),
+            "-tap",
+        ]
     if nodata is not None:
         cmd += ["-dstnodata", str(nodata)]
     cmd += [str(t) for t in tiffs]
