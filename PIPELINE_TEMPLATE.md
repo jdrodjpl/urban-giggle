@@ -271,6 +271,38 @@ these are baseline.
     into the matching `data_array[t_idx, gy0:gy1, gx0:gx1]` region.
     Peak in-flight memory is one tile (~16 MB) not one slice.
 
+12. **conda-forge GDAL 3.9+ splits format drivers into plugins.** `gdal`
+    no longer bundles the netCDF/HDF5/etc readers, so a worker dies with
+    `RasterioIOError: ... plugin gdal_netCDF.so is not available` even though
+    `gdal` is installed. Add the specific plugin to `environment.yml`
+    (`libgdal-netcdf`, `libgdal-hdf5`, `libgdal-jp2openjpeg`, …) for whatever
+    format your source reads, and **assert it in `build.sh`**
+    (`gdal.GetDriverByName('netCDF')`) so a missing plugin fails the *build*,
+    not the job. Bit the OSI SAF worker (NetCDF).
+
+13. **A dep in `environment.yml` can still be missing at runtime.** MAAP
+    rebuilds the image on every register, but the expensive conda layer
+    cache-hits when `build.sh` content is unchanged — so a *source-only*
+    re-register runs new code on a **stale conda env**, and any dep added
+    without bumping the build marker never installs. Bit us three times in one
+    week (`zarr`, `libgdal-netcdf`, `scipy`), each a confusing runtime
+    `ModuleNotFoundError` despite the dep being right there in the env file.
+    Rule: **bump `BUILD_BUST` whenever you touch `environment.yml`.** Automated
+    by `.githooks/pre-commit` — it auto-bumps the sibling `build.sh` marker when
+    an `environment.yml` is staged. Enable per clone (local *and* MAAP Jupyter):
+    `git config core.hooksPath .githooks`.
+
+14. **Algorithm version ↔ git branch — fixes must land on the right branch.**
+    MAAP does `git checkout <algorithm_version>` at build time, so a fix only
+    takes effect if it's on *that version's* branch. With algos pinned to
+    different versions (`osisaf:v1`, `s1grd:v3`, `zarr:v3`, …) it's easy to push
+    a fix to `v1` while the algo actually builds from `v3`, and rebuild the same
+    broken image. Keep **every version branch fast-forwarded to `main`** (each
+    algo builds only its own files, so one shared tree is safe):
+    `for b in v1 v2 v3; do git push origin main:$b; done`. Check what version an
+    algo is *now* (`grep algorithm_version .maap/sample-algo-configs/<algo>.yml`)
+    before assuming — versions get bumped during refactors.
+
 ## Patterns worth knowing
 
 These aren't gotchas but they save time:
