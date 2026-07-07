@@ -1,6 +1,6 @@
 algorithm_description: Frozon Sentinel-1 GRD HH+HV ingest worker — downloads SAFE ZIPs from ASF, applies σ⁰ AND β⁰ calibration (or any subset), geocodes via GCPs to EPSG:3413, mosaics into one daily COG per calibration, uploads to S3 with STAC.
 algorithm_name: frozon-iss-ingest-s1grd
-algorithm_version: v4
+algorithm_version: v5
 build_command: urban-giggle/.maap/ingest-s1grd/build.sh
 disk_space: 200GB
 docker_container_url: mas.maap-project.org/root/maap-workspaces/custom_images/maap_base:v4.2.0

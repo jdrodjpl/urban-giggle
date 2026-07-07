@@ -35,11 +35,12 @@ from __future__ import annotations
 
 import zipfile
 from pathlib import Path
-from typing import Tuple
+from typing import Optional, Tuple
 from xml.etree import ElementTree as ET
 
 import numpy as np
 import rasterio
+import rasterio.warp
 from scipy.interpolate import RegularGridInterpolator
 
 
@@ -163,11 +164,35 @@ def read_uncalib_dn(zip_path: Path, polarization: str,
 
 
 def write_calibrated_tiff(values: np.ndarray, gcps: tuple,
-                          output_path: Path) -> Path:
+                          output_path: Path,
+                          target_epsg: Optional[int] = None) -> Path:
     """Write a Float32 GeoTIFF that preserves the source's GCPs so a
-    downstream gdalwarp can geocode it."""
+    downstream gdalwarp can geocode it.
+
+    When `target_epsg` is set, the GCP (x, y) coordinates are pre-
+    transformed into that CRS *before* being stamped into the output.
+    This makes the downstream gdalwarp near-identity in target-CRS
+    space, which lets `-tps` (thin-plate spline) run fast AND stay
+    accurate at high latitudes. Fitting a polynomial (or an untranslated
+    TPS) directly through raw WGS84 GCPs is a bad approximation of the
+    spherical → polar-stereographic mapping and produces visibly
+    warped granules in the daily mosaic.
+    """
     output_path.parent.mkdir(parents=True, exist_ok=True)
     height, width = values.shape
+
+    gcp_list, gcp_crs = gcps
+    if target_epsg is not None:
+        xs, ys = rasterio.warp.transform(
+            gcp_crs,
+            rasterio.crs.CRS.from_epsg(target_epsg),
+            [g.x for g in gcp_list],
+            [g.y for g in gcp_list],
+        )
+        for g, x, y in zip(gcp_list, xs, ys):
+            g.x, g.y = x, y
+        gcp_crs = rasterio.crs.CRS.from_epsg(target_epsg)
+
     profile = {
         "driver": "GTiff",
         "dtype": "float32",
@@ -182,7 +207,7 @@ def write_calibrated_tiff(values: np.ndarray, gcps: tuple,
     }
     with rasterio.open(str(output_path), "w", **profile) as dst:
         dst.write(values, 1)
-        dst.gcps = (gcps[0], gcps[1])
+        dst.gcps = (gcp_list, gcp_crs)
     return output_path
 
 

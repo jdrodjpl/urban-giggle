@@ -157,10 +157,17 @@ def reproject_to_3413(in_tiff: Path, out_tiff: Path,
                       resolution_m: float = FIXED_RESOLUTION_M) -> Path:
     """gdalwarp the GCP-bearing intermediate σ⁰ TIFF to EPSG:3413.
 
-    `-order 2` forces a 2nd-order polynomial fit to the GCPs instead of
-    letting GDAL auto-pick (which often selects TPS for 400+ GCPs — TPS
-    is much slower and was timing out at 30 min on the worker even
-    though the Jupyter test ran in 10 sec).
+    Assumes the input's GCPs have already been pre-transformed into
+    EPSG:3413 by `write_calibrated_tiff(..., target_epsg=3413)`. That
+    turns the source→target mapping into a near-identity in target-CRS
+    space, which lets `-tps` (thin-plate spline) fit fast AND stay
+    accurate at high latitudes. This mirrors the reprojection strategy
+    in the sibling `s1_calibrate.py` script.
+
+    History: earlier revisions used `-order 2` (2nd-order polynomial
+    over raw WGS84 GCPs) to sidestep a full `-tps` timeout, but the
+    polynomial couldn't capture the polar-stereographic curvature, so
+    granules near the pole came out visibly warped in the mosaic.
 
     `-tap` (target aligned pixels) snaps the output bounds to a clean
     multiple of `resolution_m`. We deliberately don't pass `-te` here
@@ -174,8 +181,9 @@ def reproject_to_3413(in_tiff: Path, out_tiff: Path,
         "-t_srs", "EPSG:3413",
         "-tr", str(resolution_m), str(resolution_m),
         "-tap",
-        "-r", "nearest",
-        "-order", "2",
+        "-r", "bilinear",
+        "-tps",
+        "-srcnodata", "nan", "-dstnodata", "nan",
         "-multi",
         "-wo", "NUM_THREADS=ALL_CPUS",
         "--config", "GDAL_NUM_THREADS", "ALL_CPUS",
@@ -218,7 +226,10 @@ def process_granule(zip_path: Path, work_dir: Path,
 
         lines, pixels, lut = parse_calibration_lut(zip_path, cal_xml, cal)
         calibrated = apply_calibration(dn, lines, pixels, lut)
-        write_calibrated_tiff(calibrated, gcps, cal_tiff)
+        # target_epsg=3413 pre-transforms GCPs into the mosaic CRS so
+        # gdalwarp's -tps fit stays fast + accurate — see docstring on
+        # reproject_to_3413 for the polynomial-fit distortion this fixes.
+        write_calibrated_tiff(calibrated, gcps, cal_tiff, target_epsg=3413)
 
         reproject_to_3413(cal_tiff, geo_tiff)
         # Intermediate calibrated TIFF is ~1-2 GiB; drop it now that
