@@ -40,7 +40,7 @@ jobs:
       - name: Install dependencies
         # boto3 for COG listing; xarray + zarr + s3fs to read the existing
         # Zarr's time coord from S3; maap-py for submitJob + workspace creds.
-        run: pip install maap-py boto3 xarray zarr s3fs
+        run: pip install 'maap-py==4.2.0' boto3 xarray zarr s3fs
 
       - name: Sync ${{ matrix.product }} Zarr to COG state
         env:

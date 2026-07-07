@@ -20,6 +20,6 @@ dependencies:
   - jq
   - pip
   - pip:
-    - maap-py
+    - maap-py==4.2.0
     # Anonymous byte-range retrieval from the ECMWF Open Data feed.
     - ecmwf-opendata

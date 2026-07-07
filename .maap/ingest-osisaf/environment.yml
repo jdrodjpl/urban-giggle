@@ -19,4 +19,4 @@ dependencies:
   - jq
   - pip
   - pip:
-    - maap-py
+    - maap-py==4.2.0

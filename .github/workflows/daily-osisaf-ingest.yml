@@ -36,7 +36,7 @@ jobs:
       - name: Install dependencies
         # requests for THREDDS existence checks; boto3 for S3 retention /
         # pre-check; maap-py for submitJob + workspace credentials.
-        run: pip install maap-py boto3 requests
+        run: pip install 'maap-py==4.2.0' boto3 requests
 
       - name: Discover OSI SAF dates, prune old COGs, submit worker jobs
         env:

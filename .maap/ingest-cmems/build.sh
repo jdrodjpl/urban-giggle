@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Build script for the CMEMS ocean-current ingest worker.
-# BUILD_BUST=2026-06-29-1  ← bump to force a fresh Docker build.
+# BUILD_BUST=2026-07-07-1  ← bump to force a fresh Docker build.
 #
 # Credentialed Copernicus Marine subset (copernicusmarine) + xarray/rioxarray
 # NetCDF->GeoTIFF + gdalwarp/gdal_translate for the warp + COG. No GDAL netCDF

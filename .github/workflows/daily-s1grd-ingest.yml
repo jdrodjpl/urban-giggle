@@ -38,7 +38,7 @@ jobs:
       - name: Install dependencies
         # earthaccess for CMR; boto3 for S3 retention; maap-py for submitJob
         # + workspace credentials.
-        run: pip install maap-py earthaccess boto3
+        run: pip install 'maap-py==4.2.0' earthaccess boto3
 
       - name: Discover dates, prune old COGs, submit S1 GRD worker jobs
         env:

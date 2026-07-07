@@ -30,7 +30,7 @@ jobs:
         # boto3 for COG listing; xarray + zarr + s3fs to read the
         # existing Zarr's time coord from S3 without downloading the
         # whole store; maap-py for submitJob + workspace credentials.
-        run: pip install maap-py boto3 xarray zarr s3fs
+        run: pip install 'maap-py==4.2.0' boto3 xarray zarr s3fs
 
       - name: Diff COG state vs existing Zarr and submit sync job
         env:

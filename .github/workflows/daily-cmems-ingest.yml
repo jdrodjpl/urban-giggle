@@ -31,7 +31,7 @@ jobs:
         # boto3 for S3 retention / pre-check; maap-py for submitJob + workspace
         # credentials. No copernicusmarine here — the credentialed subset runs
         # only inside the DPS worker, so the runner stays credential-free.
-        run: pip install maap-py boto3
+        run: pip install 'maap-py==4.2.0' boto3
 
       - name: Discover CMEMS dates, prune old COGs, submit worker jobs
         env:

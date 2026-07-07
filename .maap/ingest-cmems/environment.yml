@@ -18,7 +18,7 @@ dependencies:
   - jq
   - pip
   - pip:
-    - maap-py
+    - maap-py==4.2.0
     # Copernicus Marine toolbox — credentialed server-side subset of the
     # ocean-current dataset. Reading the NetCDF is via xarray/netcdf4, so no
     # GDAL netCDF plugin is needed.
