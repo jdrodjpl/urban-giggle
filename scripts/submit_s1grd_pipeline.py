@@ -54,7 +54,14 @@ DEFAULTS = {
     # Discovery window.
     "LOOKBACK_DAYS":                "30",
     "MOSAIC_LAST_N_COMPLETE_DAYS":  "7",
-    "MIN_GRANULE_FRACTION":         "0.5",
+    # Absolute floor: drop dates with fewer than MIN_GRANULES granules (failed
+    # downlink / partial CMR index). Preferred over the fraction filter because
+    # S1 Arctic coverage is legitimately ~5x variable by orbit — a
+    # fraction-of-max threshold wrongly drops real low-coverage days for good.
+    "MIN_GRANULES":                 "20",
+    # Legacy fraction-of-max filter; default 0 (off). Set >0 to also drop dates
+    # below that fraction of the window's max count.
+    "MIN_GRANULE_FRACTION":         "0",
     "DISCOVERY_BUFFER":             "2",
     # Worker tuning.
     "COMPRESS":                     "DEFLATE",
@@ -276,6 +283,19 @@ def main() -> int:
           f"assumed potentially incomplete).")
 
     rest = available[1:]
+
+    # Absolute floor first: only near-empty days (failed/partial acquisitions)
+    # are dropped; genuinely-sparse-but-real Arctic days survive.
+    min_granules = int(env("MIN_GRANULES"))
+    if min_granules > 0 and rest:
+        below = [(d, c) for d, c in rest if c < min_granules]
+        rest = [(d, c) for d, c in rest if c >= min_granules]
+        if below:
+            print(f"Dropped {len(below)} date(s) below MIN_GRANULES={min_granules}:")
+            for d, c in below:
+                print(f"  {d}: {c} granule(s)")
+
+    # Optional fraction-of-max filter (off by default — see MIN_GRANULES).
     threshold_factor = float(env("MIN_GRANULE_FRACTION"))
     if threshold_factor > 0 and rest:
         max_count = max(c for _, c in rest)
@@ -283,7 +303,7 @@ def main() -> int:
         below = [(d, c) for d, c in rest if c < floor]
         rest = [(d, c) for d, c in rest if c >= floor]
         if below:
-            print(f"Dropped {len(below)} below-threshold date(s) "
+            print(f"Dropped {len(below)} below-fraction date(s) "
                   f"(< {floor:.0f} = {threshold_factor:.0%} of max {max_count}):")
             for d, c in below:
                 print(f"  {d}: {c} granule(s)")
