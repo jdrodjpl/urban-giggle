@@ -7,10 +7,12 @@ name: Daily CMEMS Zarr ingest
 # so a failure in one doesn't block the other.
 
 on:
-  schedule:
+  # Zarr cron paused 2026-07-08 — data sourced elsewhere for now;
+  # re-enable by uncommenting the schedule/cron lines below.
+  # schedule:
     # 13:30 UTC — after the CMEMS COG cron (07:15), and 30 min off the ECMWF
     # Zarr cron (13:00) / OSI SAF Zarr (12:30) / S1 Zarr (12:00).
-    - cron: "30 13 * * *"
+    # - cron: "30 13 * * *"
   workflow_dispatch:
 
 jobs:

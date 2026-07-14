@@ -8,10 +8,12 @@ name: Daily OSI SAF Zarr ingest
 # the others.
 
 on:
-  schedule:
+  # Zarr cron paused 2026-07-08 — data sourced elsewhere for now;
+  # re-enable by uncommenting the schedule/cron lines below.
+  # schedule:
     # 12:30 UTC — after the OSI SAF COG cron (06:45) has long landed, and
     # 30 min off the S1 Zarr cron (12:00) to space out DPS queue contention.
-    - cron: "30 12 * * *"
+    # - cron: "30 12 * * *"
   workflow_dispatch:
 
 jobs:

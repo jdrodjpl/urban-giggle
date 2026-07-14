@@ -1,12 +1,14 @@
 name: Daily Zarr ingest
 
 on:
-  schedule:
+  # Zarr cron paused 2026-07-08 — data sourced elsewhere for now;
+  # re-enable by uncommenting the schedule/cron lines below.
+  # schedule:
     # Run daily at 12:00 UTC — after the COG cron at 06:15 has had time
     # to finish (full-Arctic mosaic workers take 1-2 hours). The Zarr
     # is a synced mirror of the COG state, so it has to run after, not
     # alongside.
-    - cron: "0 12 * * *"
+    # - cron: "0 12 * * *"
   workflow_dispatch:
     inputs:
       zarr_collection_id:
