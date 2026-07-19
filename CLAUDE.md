@@ -90,6 +90,71 @@ The Zarr is a time-series mirror of one of the COG collections.
    STAC item id is `<collection-id>-timeseries`; asset key is `data`
    with media-type `application/vnd+zarr`.
 
+### S1 GRD overlap index (drift AOIs)
+`scripts/build_s1_overlap_index.py`, run by its own GH Actions cron
+(`daily-s1-overlap-index.yml`, 08:30 UTC). Answers "which granules
+share ground, how much, and how many days apart" — the shared areas
+with `day_diff >= 1` are the candidate AOIs for sea-ice drift.
+
+It exists because the daily mosaic destroys granule identity:
+`mosaic_tiffs` feeds every granule to one gdalwarp call, so in overlap
+zones the last input silently wins, and the COG carries a single
+midnight-UTC datetime even though its pixels span the whole day. This
+index is the only surviving record of per-granule footprint + time.
+
+- **Fully decoupled from ingest.** Reads footprints from CMR
+  (`SpatialExtent.GPolygons`), which is public — no EDL token, no DPS
+  job, no worker changes. Touches S3 only to learn which dates hold a
+  COG and to upload artifacts.
+- **Scope = `--from-s3`**, the dates that actually hold a COG, capped to
+  `--retain-days`. This matches `prune_old_cogs`: retention keeps the N
+  most recent dates *that have data*, NOT the last N calendar days — with
+  a gappy feed those differ a lot. `--dates` / `--lookback-days` for backfill.
+- **All geometry in EPSG:3413**, same CRS as the COGs. Non-negotiable at
+  60-90N: lon/lat areas are meaningless there and the antimeridian breaks
+  naive polygons. CMR corner quads are unwrapped and densified
+  (`DENSIFY_PER_EDGE`) before projecting, so edges follow the real swath.
+  Validated: median granule area 165,790 km² = 400 km swath × ~430 km
+  along-track, matching S1 EW's actual 400 km swath.
+- **The STRtree is built at query time, never persisted.** At ~100
+  granules/day the tree costs milliseconds; a persisted index could only
+  go stale, and parallel per-date workers couldn't safely share one.
+
+Outputs land at `<prefix>/<collection-id>/overlap/` as **GeoParquet**:
+`footprints.parquet` (~490 KiB) and `overlaps.parquet` (~1.8 MiB, carries
+the attributes *and* the intersection polygon). Typical run: ~380 granules
+over 7 ingested dates → ~3,800 pairs in <10s.
+
+Geometry is stored in EPSG:3413 with the CRS in GeoParquet metadata, so
+readers reproject correctly and DuckDB's `ST_Area(geometry)` returns m²
+with no reprojection. Storing native also sidesteps the antimeridian
+entirely — ~18 of ~380 weekly granules cross the dateline, and the
+RFC 7946 split (`_split_antimeridian`) is only needed for the optional
+`--geojson` output, since GeoJSON mandates lon/lat. Areas were always
+computed in 3413 and were never affected.
+
+Rows are sorted by `(day_diff, intersect_km2)` so predicate pushdown can
+skip row groups. Query straight off S3, no download:
+
+```sql
+SELECT date_a, date_b, dt_hours, intersect_km2, iou
+FROM 's3://<bucket>/<prefix>/frozon-s1-ew-hh-daily/overlap/overlaps.parquet'
+WHERE day_diff = 4 AND iou >= 0.70 ORDER BY intersect_km2 DESC;
+```
+
+Three overlap measures, and they disagree a lot — on the 482 four-day
+pairs, `iou >= 0.7` matches 6 while `max(frac_a, frac_b) >= 0.7` matches
+42. `iou` is symmetric/strict; `frac_of_*` is asymmetric (a small granule
+inside a big one scores frac 0.95 but iou 0.4). For drift, prefer
+`min(frac_of_a, frac_of_b) >= 0.7` plus an `intersect_km2` floor — the
+absolute shared area is what determines trackability, not a ratio.
+
+`day_diff` is a coarse proxy by design (per the drift use case): pairs
+with `day_diff=1` can be as little as 13h apart, and `day_diff=0` pairs
+run up to 11h. `dt_hours` is carried alongside it for free if a finer
+denominator is ever wanted. Note consecutive same-orbit granules abut
+rather than overlap — there are no sub-hour "seam" pairs to filter out.
+
 ### Shared library (`src/cog_helpers.py`)
 Pulled out of the retired OPERA RTC worker. Every source-specific
 worker composes these:
@@ -137,6 +202,7 @@ Zarr: S3 inputs → worker (download existing Zarr → fresh/append/rebuild
 
 ### Core files
 - `scripts/submit_<source>_pipeline.py` — runner cron, one per source
+- `scripts/build_s1_overlap_index.py` — S1 granule overlap index (drift AOIs); GH Actions only, no DPS
 - `src/ingest_<source>.py` — worker, one per source
 - `src/cog_helpers.py` — shared COG building (mosaic, convert, STAC, upload)
 - `src/s1_calibration.py` — S1 GRD σ⁰ calibration helpers
