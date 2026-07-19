@@ -1,0 +1,79 @@
+name: Daily S1 GRD overlap index
+
+# Builds the granule overlap index for the currently-ingested S1 GRD dates:
+# which granules share ground, how much, and how many days apart. The shared
+# areas with day_diff >= 1 are the candidate AOIs for sea-ice drift.
+#
+# Independent of the ingest pipeline: reads granule footprints from CMR
+# (public, no Earthdata auth) and only touches S3 to (a) learn which dates
+# actually hold a COG and (b) upload the artifacts. It never runs a DPS job,
+# so it cannot disturb ingestion.
+#
+# Fires at 08:30 UTC, two hours after the 06:30 ingest cron, so the day's
+# worker jobs have generally landed their COGs before we scope to S3.
+
+on:
+  schedule:
+    - cron: "30 8 * * *"
+  workflow_dispatch:
+    inputs:
+      dates:
+        description: "Explicit YYYYMMDD list (comma-separated). Overrides the S3 scope — use for backfill."
+        default: ""
+      retain_days:
+        description: "Cap to the N most recent *ingested* dates (dates with data, not calendar days)."
+        default: "7"
+      min_overlap_km2:
+        description: "Drop intersections smaller than this many km²."
+        default: "100"
+      geojson:
+        description: "Also emit lon/lat GeoJSON alongside the GeoParquet (true/false)."
+        default: "false"
+      collection_id:
+        description: "STAC collection / S3 folder holding the daily COGs."
+        default: "frozon-s1-ew-hh-daily"
+
+jobs:
+  build-index:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+
+      - name: Install dependencies
+        # geopandas (pulls shapely/pyproj/pandas) + pyarrow for the GeoParquet
+        # write; maap-py/boto3 only for the S3 date listing + artifact upload.
+        # No earthaccess: CMR granule search is public, so this job needs no
+        # EDL token.
+        run: pip install geopandas pyarrow 'maap-py==4.2.0' boto3 -c .github/constraints.txt
+
+      - name: Build overlap index
+        env:
+          MAAP_TOKEN: ${{ secrets.MAAP_TOKEN }}
+          MAAP_HOST: "api.maap-project.org"
+        run: |
+          if [ -n "${{ github.event.inputs.dates }}" ]; then
+            SCOPE="--dates ${{ github.event.inputs.dates }}"
+          else
+            SCOPE="--from-s3 --retain-days ${{ github.event.inputs.retain_days || '7' }}"
+          fi
+          if [ "${{ github.event.inputs.geojson }}" = "true" ]; then
+            SCOPE="$SCOPE --geojson"
+          fi
+          python scripts/build_s1_overlap_index.py \
+            $SCOPE \
+            --collection-id "${{ github.event.inputs.collection_id || 'frozon-s1-ew-hh-daily' }}" \
+            --min-overlap-km2 "${{ github.event.inputs.min_overlap_km2 || '100' }}" \
+            --output output \
+            --upload
+
+      - name: Upload artifacts to the workflow run
+        # Handy for eyeballing a run without pulling from S3.
+        uses: actions/upload-artifact@v4
+        with:
+          name: s1-overlap-index
+          path: output/
+          if-no-files-found: error
