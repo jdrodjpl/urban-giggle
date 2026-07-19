@@ -1,0 +1,66 @@
+{
+  "type": "vector",
+  "name": "ECMWF 10m Wind Arrows",
+  "kind": "info",
+  "description": "Daily ECMWF Open Data 10 m wind (00z T+0 analysis) as arrows colored by speed. Derived wind_arrows product: 150 km-spaced points with speed (m/s) and dir_to (compass bearing the wind blows toward). See DATA_ECMWF.md in the urban-giggle repo. Note: the arrow shape and rotation are 2D-only; the 3D globe degrades to plain dots.",
+  "url": "Layers/frozon-ecmwf-wind-arrows-daily/{time}",
+  "visibility": false,
+  "initialOpacity": 1,
+  "shape": "none",
+  "style": {
+    "className": "",
+    "color": "#000000",
+    "opacity": 1,
+    "fillColor": "#FFFFFF",
+    "fillOpacity": 1,
+    "weight": 1,
+    "radius": 8,
+    "shapeIcon": "arrow-up-bold",
+    "animation": "none"
+  },
+  "time": {
+    "enabled": true,
+    "type": "requery",
+    "format": "%Y/%m/%d/frozon-ecmwf-wind-arrows-daily_%Y%m%d.geojson",
+    "startProp": "",
+    "endProp": "",
+    "refreshIntervalEnabled": false
+  },
+  "variables": {
+    "useKeyAsName": "speed",
+    "markerAttachments": {
+      "bearing": {
+        "enabled": true,
+        "angleProp": "dir_to",
+        "angleUnit": "deg",
+        "useCustomShape": true
+      }
+    },
+    "legend": [
+      {
+        "color": "#3288bd",
+        "value": "0 m/s",
+        "shape": "continuous",
+        "propertyName": "speed",
+        "propertyValue": "0",
+        "styleMatching": true
+      },
+      {
+        "color": "#fee08b",
+        "value": "10 m/s",
+        "shape": "continuous",
+        "propertyName": "speed",
+        "propertyValue": "10",
+        "styleMatching": true
+      },
+      {
+        "color": "#d53e4f",
+        "value": "20+ m/s",
+        "shape": "continuous",
+        "propertyName": "speed",
+        "propertyValue": "20",
+        "styleMatching": true
+      }
+    ]
+  }
+}

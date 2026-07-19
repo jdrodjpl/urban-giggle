@@ -105,11 +105,27 @@ PRODUCTS = {
         "units": "m s-1",
         "default_collection": "frozon-ecmwf-wind-ew-daily",
     },
+    # Derived product: decimated point GeoJSON combining 10u + 10v for the
+    # MMGIS arrow layer (vector layer + bearing marker attachment). Not a COG.
+    # `param` is informational only — the worker retrieves via the wind_ew /
+    # wind_ns configs and pairs them.
+    "wind_arrows": {
+        "param": "10u+10v",
+        "long_name": "wind_speed_and_bearing",
+        "units": "m s-1 / deg",
+        "default_collection": "frozon-ecmwf-wind-arrows-daily",
+    },
 }
 
 WARP_RESAMPLING = "bilinear"   # gdalwarp -r (continuous fields)
 COG_RESAMPLING = "bilinear"    # gdal_translate -r
 OVR_RESAMPLING = "average"     # overview build
+
+# wind_arrows: sample every Nth pixel of the 10 km EPSG:3413 grid. Because the
+# grid IS the display projection, a fixed stride gives arrows evenly spaced on
+# the polar map. 15 -> 150 km spacing -> ~3.4k points from the 760x1120 grid
+# (full resolution would be ~850k divIcon markers in MMGIS — a browser-killer).
+ARROW_STRIDE = 15
 
 
 # --------------------------------------------------------------------------
@@ -269,6 +285,85 @@ def warp_to_3413(in_tiff: Path, out_tiff: Path) -> Path:
 
 
 # --------------------------------------------------------------------------
+# wind_arrows: decimated speed/bearing point GeoJSON from the u + v grids
+# --------------------------------------------------------------------------
+
+def build_wind_arrows(u_tiff: Path, v_tiff: Path, out_geojson: Path,
+                      stride: int = ARROW_STRIDE) -> Path:
+    """Sample the co-registered EPSG:3413 u (eastward) and v (northward) wind
+    grids every `stride` pixels and write a Point GeoJSON with per-point
+    `speed` (m/s) and `dir_to` (compass bearing the wind blows TOWARD, degrees
+    clockwise from true north).
+
+    gdalwarp reprojects the raster grid but does not rotate vector components,
+    so the pixel values remain true-east/true-north m/s — atan2(u, v) is
+    therefore a true-north bearing regardless of the 3413 warp. MMGIS's bearing
+    marker attachment expects exactly that and applies the per-marker
+    projection-north correction itself (LayerConstructors.js), which is also
+    why this product exists: the leaflet-velocity streamline layer breaks at
+    the pole on polar-stereographic maps (onaci/leaflet-velocity#41).
+
+    Both are emitted as JSON numbers, never strings — MMGIS's continuous legend
+    styling gates on `typeof value === 'number'` and silently falls back to
+    discrete matching on strings."""
+    import json
+
+    from rasterio.warp import transform as rio_transform
+
+    with rasterio.open(u_tiff) as usrc, rasterio.open(v_tiff) as vsrc:
+        if usrc.transform != vsrc.transform or usrc.shape != vsrc.shape:
+            raise RuntimeError(
+                f"u/v grids not co-registered: {u_tiff.name} vs {v_tiff.name}")
+        u = usrc.read(1)
+        v = vsrc.read(1)
+        grid_transform = usrc.transform
+        grid_crs = usrc.crs
+
+    rows = np.arange(stride // 2, u.shape[0], stride)
+    cols = np.arange(stride // 2, u.shape[1], stride)
+    cgrid, rgrid = np.meshgrid(cols, rows)
+    rs, cs = rgrid.ravel(), cgrid.ravel()
+
+    us, vs = u[rs, cs], v[rs, cs]
+    valid = np.isfinite(us) & np.isfinite(vs)
+    rs, cs, us, vs = rs[valid], cs[valid], us[valid], vs[valid]
+    if rs.size == 0:
+        raise RuntimeError("wind_arrows: no valid u/v samples on the grid")
+
+    # Pixel centers in map coords, then to lon/lat in one vectorized call.
+    xs, ys = rasterio.transform.xy(grid_transform, rs, cs)
+    lons, lats = rio_transform(grid_crs, "EPSG:4326", xs, ys)
+
+    speed = np.hypot(us, vs)
+    # Compass bearing toward: atan2(east, north), clockwise from true north.
+    dir_to = np.degrees(np.arctan2(us, vs)) % 360.0
+
+    features = [
+        {
+            "type": "Feature",
+            "geometry": {"type": "Point",
+                         "coordinates": [round(lon, 4), round(lat, 4)]},
+            "properties": {
+                "speed": round(float(sp), 2),
+                "dir_to": round(float(dr), 1),
+                "u": round(float(uu), 2),
+                "v": round(float(vv), 2),
+            },
+        }
+        for lon, lat, sp, dr, uu, vv in zip(lons, lats, speed, dir_to, us, vs)
+    ]
+
+    out_geojson.parent.mkdir(parents=True, exist_ok=True)
+    with open(out_geojson, "w") as f:
+        json.dump({"type": "FeatureCollection", "features": features}, f,
+                  separators=(",", ":"))
+    logger.info(f"wind_arrows: {len(features)} points (stride {stride} = "
+                f"{stride * TGT_RES / 1000:.0f} km) -> {out_geojson.name} "
+                f"({out_geojson.stat().st_size / 1e6:.2f} MB)")
+    return out_geojson
+
+
+# --------------------------------------------------------------------------
 # Entry point
 # --------------------------------------------------------------------------
 
@@ -322,6 +417,47 @@ def main() -> int:
     scratch_dir.mkdir(parents=True, exist_ok=True)
 
     try:
+        # --- wind_arrows: derived 10u+10v -> decimated point GeoJSON, no COG ---
+        if args.product == "wind_arrows":
+            input_gribs = {}
+            if args.input_grib:
+                # Testing path: two comma-separated local GRIBs, u then v.
+                parts = [Path(s) for s in args.input_grib.split(",")]
+                if len(parts) != 2:
+                    raise FileNotFoundError(
+                        "--input-grib for wind_arrows needs two comma-separated "
+                        "paths: <10u.grib2>,<10v.grib2>")
+                for comp, pth in zip(("wind_ew", "wind_ns"), parts):
+                    if not pth.exists():
+                        raise FileNotFoundError(f"--input-grib not found: {pth}")
+                    input_gribs[comp] = pth
+
+            warped = {}
+            for comp in ("wind_ew", "wind_ns"):
+                grib_path = input_gribs.get(comp) or retrieve_grib(
+                    comp, args.date, args.time, args.step,
+                    scratch_dir / "grib" / f"{comp}_{args.date}.grib2",
+                    resol=args.resol)
+                src_tiff = extract_variable(
+                    grib_path, comp,
+                    scratch_dir / "src" / f"{comp}_{args.date}_4326.tif")
+                warped[comp] = warp_to_3413(
+                    src_tiff,
+                    scratch_dir / "warp" / f"{comp}_{args.date}_3413.tif")
+
+            geojson_path = build_wind_arrows(
+                warped["wind_ew"], warped["wind_ns"],
+                scratch_dir / "arrows" / f"{collection_id}_{args.date}.geojson")
+
+            item_dt = datetime.strptime(args.date, "%Y%m%d").replace(
+                hour=args.time, tzinfo=timezone.utc)
+            s3_key = cog_helpers.build_dated_s3_key(
+                args.s3_prefix, collection_id, item_dt, geojson_path.name)
+            s3_url = cog_helpers.upload_cog_to_key(
+                geojson_path, args.s3_bucket, s3_key, args.role_arn)
+            logger.info(f"ECMWF wind_arrows ingest complete: {s3_url}")
+            return 0
+
         # --- 1. Resolve + retrieve the GRIB ---
         if args.input_grib:
             grib_path = Path(args.input_grib)

@@ -8,8 +8,8 @@ per date — no granule search, no granule-count threshold filtering.
 
 We ingest the **step-0 (T+0 analysis) field of the 00 UTC oper HRES run** as the
 daily snapshot. That single step-0 file carries every parameter, so discovery is
-product-independent: one HEAD per date tells us whether all three products
-(airtemp / wind_ns / wind_ew) are available.
+product-independent: one HEAD per date tells us whether all products
+(airtemp / wind_ns / wind_ew / wind_arrows) are available.
 
 Per run:
 
@@ -37,6 +37,8 @@ PRODUCT_COLLECTIONS = {
     "airtemp": "frozon-ecmwf-airtemp-daily",
     "wind_ns": "frozon-ecmwf-wind-ns-daily",
     "wind_ew": "frozon-ecmwf-wind-ew-daily",
+    # Derived 10u+10v decimated point GeoJSON for the MMGIS arrow layer.
+    "wind_arrows": "frozon-ecmwf-wind-arrows-daily",
 }
 
 DEFAULTS = {
@@ -45,7 +47,7 @@ DEFAULTS = {
     "WORKER_ALGO_VERSION":        "v1",
     "QUEUE":                      "maap-dps-worker-8gb",
     # Which products to ingest this run (comma-separated subset).
-    "PRODUCTS":                   "airtemp,wind_ns,wind_ew",
+    "PRODUCTS":                   "airtemp,wind_ns,wind_ew,wind_arrows",
     # Open Data run + step that defines the daily snapshot.
     "RUN_TIME":                   "0",     # 00z
     "STEP":                       "0",     # T+0 analysis

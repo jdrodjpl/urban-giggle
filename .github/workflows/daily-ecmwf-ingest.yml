@@ -9,8 +9,8 @@ on:
   workflow_dispatch:
     inputs:
       products:
-        description: "Which ECMWF products to ingest (comma-separated subset of airtemp,wind_ns,wind_ew)."
-        default: "airtemp,wind_ns,wind_ew"
+        description: "Which ECMWF products to ingest (comma-separated subset of airtemp,wind_ns,wind_ew,wind_arrows)."
+        default: "airtemp,wind_ns,wind_ew,wind_arrows"
       lookback_days:
         description: "Max days to walk back probing the Open Data feed for published files."
         default: "7"
@@ -42,7 +42,7 @@ jobs:
         env:
           MAAP_TOKEN: ${{ secrets.MAAP_TOKEN }}
           MAAP_HOST: "api.maap-project.org"
-          PRODUCTS: ${{ github.event.inputs.products || 'airtemp,wind_ns,wind_ew' }}
+          PRODUCTS: ${{ github.event.inputs.products || 'airtemp,wind_ns,wind_ew,wind_arrows' }}
           LOOKBACK_DAYS: ${{ github.event.inputs.lookback_days || '7' }}
           INGEST_LAST_N_COMPLETE_DAYS: ${{ github.event.inputs.ingest_last_n_complete_days || '4' }}
           RETAIN_DAYS: ${{ github.event.inputs.retain_days || '7' }}

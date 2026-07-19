@@ -19,8 +19,11 @@ collection:
 | `airtemp` | `2t`  | 2 m air temperature        | `frozon-ecmwf-airtemp-daily` | °C (see unit note below) |
 | `wind_ns` | `10v` | 10 m northward (V) wind    | `frozon-ecmwf-wind-ns-daily` | m s⁻¹ |
 | `wind_ew` | `10u` | 10 m eastward (U) wind     | `frozon-ecmwf-wind-ew-daily` | m s⁻¹ |
+| `wind_arrows` | `10u`+`10v` | derived speed/bearing points (GeoJSON, not a COG) | `frozon-ecmwf-wind-arrows-daily` | m s⁻¹ / deg |
 
-All three are **continuous** fields → bilinear resampling, Float32, NoData NaN.
+The three raster products are **continuous** fields → bilinear resampling,
+Float32, NoData NaN. `wind_arrows` is a derived vector product — see
+"Wind arrows" below.
 
 > **`wind_direction_ns` / `wind_direction_ew` are wind vector *components*, not
 > a direction in degrees.** NS = northward component (`10v`), EW = eastward
@@ -106,6 +109,40 @@ https://data.ecmwf.int/forecasts/<YYYYMMDD>/00z/ifs/0p25/oper/<YYYYMMDD>000000-0
 
 NoData is NaN. ECMWF surface fields are globally complete (defined over land and
 ocean), so the Arctic crop has no internal gaps.
+
+## Wind arrows (`wind_arrows`)
+
+A derived product for MMGIS: a decimated **point GeoJSON** combining `10u` +
+`10v`, one file per day, for display as a rotated-arrow vector layer.
+
+**Why not the MMGIS `velocity` (streamlines) layer?** leaflet-velocity's
+distortion math breaks down at the pole on polar-stereographic maps (empty
+streamline disc at the map center; measured on the live EPSG:3413 frozon map,
+and documented upstream — onaci/leaflet-velocity#41 is literally "support
+EPSG:3413", closed unfixed; the vendored MMGIS copy already carries both known
+workarounds). MMGIS's vector-layer bearing attachment instead derives north
+per-marker from the live projection, so it is correct at 90°N by construction.
+
+Mechanics (`build_wind_arrows` in `src/ingest_ecmwf.py`):
+
+- Retrieves both components, reuses the standard extract + warp so the u/v
+  grids are the canonical EPSG:3413 10 km grid, co-registered.
+- Samples every `ARROW_STRIDE` (15) pixels → 150 km spacing → ~3.4k points.
+  Because the grid **is** the display projection, arrows are evenly spaced on
+  the polar map. (Full resolution would be ~850k DOM markers in MMGIS.)
+- gdalwarp does not rotate vector components, so pixel values stay
+  true-east/true-north m s⁻¹; `dir_to = atan2(u, v)` is a true-north compass
+  bearing ("blows toward"). MMGIS applies the projection-north correction
+  per marker.
+- Properties per point: `speed` (m s⁻¹), `dir_to` (deg), `u`, `v` — all JSON
+  **numbers** (MMGIS's continuous legend styling ignores string values).
+- Upload: `<collection>/YYYY/MM/DD/frozon-ecmwf-wind-arrows-daily_YYYYMMDD.geojson`
+  (same dated layout as the COGs, so runner dedupe/retention and `run-sync.sh`
+  work unchanged; the sync entry sets `stac_update: false`).
+
+MMGIS layer config: `styles/ecmwf_wind_arrows.layer.json` — a time-enabled
+(requery) vector layer whose `time.format` doubles as the dated file path, with
+the bearing marker attachment on `dir_to` and a continuous speed legend.
 
 ## S3 layout
 
