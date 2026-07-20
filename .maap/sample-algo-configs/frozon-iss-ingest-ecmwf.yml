@@ -1,4 +1,4 @@
-algorithm_description: Frozon ECMWF Open Data ingest worker — retrieves one near-surface field (2 m air temperature, 10 m northward wind, or 10 m eastward wind) for one date from the ECMWF Open Data real-time IFS feed (anonymous byte-range via ecmwf-opendata), extracts the step-0 analysis field, rolls the global 0..360 grid onto −180..180, reprojects to the canonical EPSG:3413 Arctic grid, writes a COG, uploads to S3.
+algorithm_description: Frozon ECMWF Open Data ingest worker — retrieves one near-surface product (2 m air temperature, 10 m northward wind, 10 m eastward wind, or the derived wind-arrows point GeoJSON combining both wind components) for one date from the ECMWF Open Data real-time IFS feed (anonymous byte-range via ecmwf-opendata), extracts the step-0 analysis field, rolls the global 0..360 grid onto −180..180, reprojects to the canonical EPSG:3413 Arctic grid, writes a COG (or decimated speed/bearing GeoJSON for wind_arrows), uploads to S3.
 algorithm_name: frozon-iss-ingest-ecmwf
 algorithm_version: v1
 build_command: urban-giggle/.maap/ingest-ecmwf/build.sh
@@ -9,7 +9,7 @@ inputs:
   file: []
   positional:
   - default: ""
-    description: ECMWF product to ingest — one of airtemp (2t) | wind_ns (10v) | wind_ew (10u).
+    description: ECMWF product to ingest — one of airtemp (2t) | wind_ns (10v) | wind_ew (10u) | wind_arrows (derived 10u+10v speed/bearing point GeoJSON).
     name: product
     required: true
   - default: ""
