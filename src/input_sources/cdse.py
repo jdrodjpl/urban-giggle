@@ -31,6 +31,7 @@ from __future__ import annotations
 
 import logging
 import os
+import random
 import re
 import time
 from fnmatch import fnmatch
@@ -50,6 +51,15 @@ DOWNLOAD_URL_TEMPLATE = ("https://download.dataspace.copernicus.eu/odata/v1"
 PUBLIC_CLIENT_ID = "cdse-public"
 PAGE_SIZE = 1000
 MAX_REDIRECTS = 5
+# CDSE enforces a per-account concurrent-download-session cap (~4) and
+# answers excess requests with 429 DAT-ZIP-100 "Max session number
+# exceeded". Several daily workers share the one pipeline account, so
+# 429 is an expected steady-state signal, not an error: wait and retry
+# until a session frees up. The schedule below tops out around 40 min
+# of cumulative waiting per granule before giving up.
+THROTTLE_MAX_RETRIES = 12
+THROTTLE_INITIAL_DELAY_S = 15.0
+THROTTLE_MAX_DELAY_S = 300.0
 
 # CMR-short-name suffix → the product-type token embedded in CDSE Names
 # (S1A_EW_GRDM_1SDH_...): GRD_MEDIUM → GRDM etc.
@@ -319,8 +329,11 @@ def download_product(product: dict, dest_dir, auth: CDSEAuth,
 
     The $value payload is a ZIP of the SAFE directory — the same layout
     ASF distributes, so downstream calibration code is source-agnostic.
+
     Retries once with a fresh token on 401/403 (the token can expire
-    between the check in `bearer()` and the server handling the request).
+    between the check in `bearer()` and the server handling the
+    request), and waits out 429/5xx responses with jittered exponential
+    backoff — see THROTTLE_* above for why 429 is business as usual.
     """
     sess = session or requests.Session()
     dest_dir = Path(dest_dir)
@@ -330,13 +343,40 @@ def download_product(product: dict, dest_dir, auth: CDSEAuth,
     local_path = dest_dir / zip_name
     url = DOWNLOAD_URL_TEMPLATE.format(pid=product["id"])
 
-    for attempt in (1, 2):
+    auth_retried = False
+    delay = THROTTLE_INITIAL_DELAY_S
+    throttle_retries = 0
+    while True:
         resp = _get_following_redirects(url, auth.bearer(), sess)
-        if resp.status_code in (401, 403) and attempt == 1:
+        if resp.status_code in (401, 403) and not auth_retried:
             logger.warning(f"CDSE download got {resp.status_code}; "
                            f"re-granting token and retrying once.")
             resp.close()
             auth.invalidate()
+            auth_retried = True
+            continue
+        if resp.status_code == 429 or 500 <= resp.status_code < 600:
+            body = resp.text[:300]
+            resp.close()
+            if throttle_retries >= THROTTLE_MAX_RETRIES:
+                raise RuntimeError(
+                    f"CDSE still throttling/erroring for {name} after "
+                    f"{THROTTLE_MAX_RETRIES} retries ({resp.status_code}): {body}"
+                )
+            throttle_retries += 1
+            retry_after = resp.headers.get("Retry-After", "")
+            base = float(retry_after) if retry_after.isdigit() else delay
+            # Jitter desynchronizes the parallel per-date workers that
+            # share the account — without it they'd re-collide in
+            # lockstep on every retry.
+            wait = base * random.uniform(0.75, 1.25)
+            logger.warning(
+                f"CDSE {resp.status_code} for {name} "
+                f"(retry {throttle_retries}/{THROTTLE_MAX_RETRIES}, "
+                f"waiting {wait:.0f}s): {body}"
+            )
+            time.sleep(wait)
+            delay = min(delay * 1.6, THROTTLE_MAX_DELAY_S)
             continue
         if resp.status_code != 200:
             body = resp.text[:300]
