@@ -265,6 +265,15 @@ def main() -> int:
         to_submit = [d for d in candidates
                      if not cog_exists_in_s3(s3, collection_id, d,
                                              min_count=expected_files)]
+        if product == "wind_arrows":
+            # The worker also emits two glyph COGs into a sibling collection;
+            # a date isn't complete until those exist too (so dates ingested
+            # before the glyph renderer existed get resubmitted once).
+            to_submit = sorted(set(to_submit) | {
+                d for d in candidates
+                if not cog_exists_in_s3(
+                    s3, "frozon-ecmwf-wind-glyphs-daily", d, min_count=2)
+            }, reverse=True)
         skipped = [d for d in candidates if d not in to_submit]
         if skipped:
             print(f"[{product}] skipping {len(skipped)} with existing COG: {skipped}")
