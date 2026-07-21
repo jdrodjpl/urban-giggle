@@ -289,7 +289,8 @@ def warp_to_3413(in_tiff: Path, out_tiff: Path) -> Path:
 # --------------------------------------------------------------------------
 
 def build_wind_arrows(u_tiff: Path, v_tiff: Path, out_geojson: Path,
-                      stride: int = ARROW_STRIDE) -> Path:
+                      stride: int = ARROW_STRIDE,
+                      time_iso: Optional[str] = None) -> Path:
     """Sample the co-registered EPSG:3413 u (eastward) and v (northward) wind
     grids every `stride` pixels and write a Point GeoJSON with per-point
     `speed` (m/s) and `dir_to` (compass bearing the wind blows TOWARD, degrees
@@ -305,7 +306,12 @@ def build_wind_arrows(u_tiff: Path, v_tiff: Path, out_geojson: Path,
 
     Both are emitted as JSON numbers, never strings — MMGIS's continuous legend
     styling gates on `typeof value === 'number'` and silently falls back to
-    discrete matching on strings."""
+    discrete matching on strings.
+
+    With stride=1 the full grid is emitted (~850k points, ~120 MB) — the
+    geodataset-loading path. `time_iso`, when given, is stamped on every
+    feature as properties.time so the Geodatasets append can map it to the
+    indexed start_time/end_time columns (start_prop=time&end_prop=time)."""
     import json
 
     from rasterio.warp import transform as rio_transform
@@ -338,6 +344,7 @@ def build_wind_arrows(u_tiff: Path, v_tiff: Path, out_geojson: Path,
     # Compass bearing toward: atan2(east, north), clockwise from true north.
     dir_to = np.degrees(np.arctan2(us, vs)) % 360.0
 
+    time_props = {"time": time_iso} if time_iso else {}
     features = [
         {
             "type": "Feature",
@@ -348,6 +355,7 @@ def build_wind_arrows(u_tiff: Path, v_tiff: Path, out_geojson: Path,
                 "dir_to": round(float(dr), 1),
                 "u": round(float(uu), 2),
                 "v": round(float(vv), 2),
+                **time_props,
             },
         }
         for lon, lat, sp, dr, uu, vv in zip(lons, lats, speed, dir_to, us, vs)
@@ -445,17 +453,27 @@ def main() -> int:
                     src_tiff,
                     scratch_dir / "warp" / f"{comp}_{args.date}_3413.tif")
 
+            item_dt = datetime.strptime(args.date, "%Y%m%d").replace(
+                hour=args.time, tzinfo=timezone.utc)
+            time_iso = item_dt.strftime("%Y-%m-%dT%H:%M:%SZ")
+
+            # Decimated file for the static map layer...
             geojson_path = build_wind_arrows(
                 warped["wind_ew"], warped["wind_ns"],
                 scratch_dir / "arrows" / f"{collection_id}_{args.date}.geojson")
+            # ...and the full-resolution grid for the Geodatasets loader
+            # (~850k points; time stamped per feature for temporal queries).
+            full_path = build_wind_arrows(
+                warped["wind_ew"], warped["wind_ns"],
+                scratch_dir / "arrows" / f"{collection_id}_{args.date}_full.geojson",
+                stride=1, time_iso=time_iso)
 
-            item_dt = datetime.strptime(args.date, "%Y%m%d").replace(
-                hour=args.time, tzinfo=timezone.utc)
-            s3_key = cog_helpers.build_dated_s3_key(
-                args.s3_prefix, collection_id, item_dt, geojson_path.name)
-            s3_url = cog_helpers.upload_cog_to_key(
-                geojson_path, args.s3_bucket, s3_key, args.role_arn)
-            logger.info(f"ECMWF wind_arrows ingest complete: {s3_url}")
+            for pth in (geojson_path, full_path):
+                s3_key = cog_helpers.build_dated_s3_key(
+                    args.s3_prefix, collection_id, item_dt, pth.name)
+                s3_url = cog_helpers.upload_cog_to_key(
+                    pth, args.s3_bucket, s3_key, args.role_arn)
+                logger.info(f"ECMWF wind_arrows uploaded: {s3_url}")
             return 0
 
         # --- 1. Resolve + retrieve the GRIB ---

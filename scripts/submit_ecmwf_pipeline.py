@@ -189,12 +189,16 @@ def prune_old_cogs(s3, collection_id: str) -> None:
         )
 
 
-def cog_exists_in_s3(s3, collection_id: str, date_key: str) -> bool:
+def cog_exists_in_s3(s3, collection_id: str, date_key: str,
+                     min_count: int = 1) -> bool:
+    """True if the dated folder already holds at least min_count objects.
+    wind_arrows uses min_count=2 (decimated + _full GeoJSON), so dates
+    ingested before the full-res output existed get resubmitted once."""
     yyyy, mm, dd = date_key[:4], date_key[4:6], date_key[6:8]
     bucket = env("S3_BUCKET")
     key_prefix = _collection_prefix(collection_id) + f"{yyyy}/{mm}/{dd}/"
-    r = s3.list_objects_v2(Bucket=bucket, Prefix=key_prefix, MaxKeys=1)
-    return r.get("KeyCount", 0) > 0
+    r = s3.list_objects_v2(Bucket=bucket, Prefix=key_prefix, MaxKeys=min_count)
+    return r.get("KeyCount", 0) >= min_count
 
 
 # --------------------------------------------------------------------------
@@ -257,7 +261,10 @@ def main() -> int:
 
         prune_old_cogs(s3, collection_id)
 
-        to_submit = [d for d in candidates if not cog_exists_in_s3(s3, collection_id, d)]
+        expected_files = 2 if product == "wind_arrows" else 1
+        to_submit = [d for d in candidates
+                     if not cog_exists_in_s3(s3, collection_id, d,
+                                             min_count=expected_files)]
         skipped = [d for d in candidates if d not in to_submit]
         if skipped:
             print(f"[{product}] skipping {len(skipped)} with existing COG: {skipped}")
