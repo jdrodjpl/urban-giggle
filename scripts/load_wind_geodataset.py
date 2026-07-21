@@ -33,7 +33,10 @@ import urllib.request
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
-DATASET = os.environ.get("WIND_GEODATASET", "frozon-wind-full")
+# NOTE: MMGIS sanitizes geodataset names on creation (hyphens stripped), so
+# use the sanitized form directly — "frozon-wind-full" would resolve on
+# append/recreate but NOT on the frontend's /get lookup.
+DATASET = os.environ.get("WIND_GEODATASET", "frozonwindfull")
 SRC_DIR = Path(os.environ.get(
     "WIND_FULL_DIR",
     "/home/mmgis/frozon-efs/Layers/frozon-ecmwf-wind-arrows-daily"))
@@ -43,7 +46,12 @@ STATE_PATH = Path(os.environ.get(
     "WIND_LOADER_STATE", str(Path(__file__).parent / "wind-loader-state.json")))
 CHUNK = int(os.environ.get("WIND_LOADER_CHUNK", "25000"))
 RETAIN_DAYS = int(os.environ.get("RETAIN_DAYS", "7"))
-TIME_PROP = "time"
+# Each daily snapshot covers its whole day: start_time = the worker-stamped
+# `time` (00:00Z), end_time = an injected `time_end` (next midnight). Without
+# the range, features exist at a midnight instant and any intraday time-slider
+# window returns nothing.
+START_PROP = "time"
+END_PROP = "time_end"
 
 
 def log(msg: str) -> None:
@@ -103,6 +111,12 @@ def load_date(date_key: str, path: Path, state: dict, bootstrap: bool) -> None:
         f"({path.stat().st_size / 1e6:.0f} MB)")
     features = json.loads(path.read_text())["features"]
     total = len(features)
+
+    # Inject the day-coverage end time (next midnight UTC) on every feature.
+    day = datetime.strptime(date_key, "%Y%m%d").replace(tzinfo=timezone.utc)
+    time_end = (day + timedelta(days=1)).strftime("%Y-%m-%dT%H:%M:%SZ")
+    for f in features:
+        f["properties"][END_PROP] = time_end
     n_chunks = (total + CHUNK - 1) // CHUNK
     entry = state["dates"].setdefault(
         date_key, {"chunks_done": 0, "n_chunks": n_chunks, "done": False})
@@ -114,12 +128,12 @@ def load_date(date_key: str, path: Path, state: dict, bootstrap: bool) -> None:
         fc = {"type": "FeatureCollection", "features": chunk}
         if bootstrap and i == 0 and entry["chunks_done"] == 0:
             api("POST",
-                f"/api/geodatasets/recreate/{DATASET}/{TIME_PROP},{TIME_PROP}",
+                f"/api/geodatasets/recreate/{DATASET}/{START_PROP},{END_PROP}",
                 body=fc)
         else:
             api("POST",
                 f"/api/geodatasets/append/{DATASET}"
-                f"?start_prop={TIME_PROP}&end_prop={TIME_PROP}",
+                f"?start_prop={START_PROP}&end_prop={END_PROP}",
                 body=fc)
         entry["chunks_done"] = i + 1
         save_state(state)
