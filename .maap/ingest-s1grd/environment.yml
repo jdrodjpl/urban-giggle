@@ -15,6 +15,7 @@ dependencies:
   - boto3
   - backoff
   - paramiko
+  - requests
   - jq
   - pip
   - pip:

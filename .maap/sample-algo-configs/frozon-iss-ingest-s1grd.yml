@@ -1,6 +1,6 @@
-algorithm_description: Frozon Sentinel-1 GRD HH+HV ingest worker — downloads SAFE ZIPs from ASF, applies σ⁰ AND β⁰ calibration (or any subset), geocodes via GCPs to EPSG:3413, mosaics into one daily COG per calibration, uploads to S3 with STAC.
+algorithm_description: Frozon Sentinel-1 GRD HH+HV ingest worker — downloads SAFE ZIPs from ASF or the Copernicus Data Space (CDSE, for dates ASF hasn't mirrored yet), applies σ⁰ AND β⁰ calibration (or any subset), geocodes via GCPs to EPSG:3413, mosaics into one daily COG per calibration, uploads to S3 with STAC.
 algorithm_name: frozon-iss-ingest-s1grd
-algorithm_version: v5
+algorithm_version: v6
 build_command: urban-giggle/.maap/ingest-s1grd/build.sh
 disk_space: 200GB
 docker_container_url: mas.maap-project.org/root/maap-workspaces/custom_images/maap_base:v4.2.0
@@ -40,10 +40,18 @@ inputs:
     description: YYYYMMDD used to name the daily mosaic output and stamp its STAC datetime.
     name: mosaic_date
     required: true
+  - default: "asf"
+    description: Catalog + download endpoint for self-query mode — "asf" (CMR/ASF) or "cdse" (Copernicus Data Space origin catalog, used for dates ASF hasn't mirrored yet).
+    name: input_source
+    required: false
   - default: ""
-    description: MAAP secret name holding an EDL bearer token. User must have authorized the "Alaska Satellite Facility Data Access" application on their EDL profile for ASF downloads to work.
+    description: MAAP secret name holding CDSE OAuth credentials (required when input_source=cdse). Either "username\npassword" lines for a dataspace.copernicus.eu account (password grant via the public cdse-public client) or client_id=/client_secret= lines for a registered private client.
+    name: cdse_secret_name
+    required: false
+  - default: ""
+    description: MAAP secret name holding an EDL bearer token (required when input_source=asf). User must have authorized the "Alaska Satellite Facility Data Access" application on their EDL profile for ASF downloads to work.
     name: earthdata_token_secret_name
-    required: true
+    required: false
   - default: "sigma0"
     description: Comma-separated list of calibration conventions to emit (sigma0,beta0,gamma0). Each produces its own per-day mosaic COG in its own collection.
     name: calibrations

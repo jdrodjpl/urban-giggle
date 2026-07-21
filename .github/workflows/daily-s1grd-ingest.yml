@@ -27,6 +27,9 @@ on:
       collection_id:
         description: "STAC collection / S3 folder for the daily COGs."
         default: "frozon-s1-ew-hh-daily"
+      cdse_secret_name:
+        description: "MAAP secret with CDSE OAuth creds (username\\npassword or client_id=/client_secret=). Empty disables the CDSE fallback."
+        default: "cdse-creds-frozon"
 
 jobs:
   submit:
@@ -39,9 +42,10 @@ jobs:
           python-version: "3.12"
 
       - name: Install dependencies
-        # earthaccess for CMR; boto3 for S3 retention; maap-py for submitJob
-        # + workspace credentials.
-        run: pip install 'maap-py==4.2.0' earthaccess boto3 -c .github/constraints.txt
+        # earthaccess for CMR; requests for the CDSE catalog counts;
+        # boto3 for S3 retention; maap-py for submitJob + workspace
+        # credentials.
+        run: pip install 'maap-py==4.2.0' earthaccess requests boto3 -c .github/constraints.txt
 
       - name: Discover dates, prune old COGs, submit S1 GRD worker jobs
         env:
@@ -53,4 +57,5 @@ jobs:
           MIN_GRANULE_FRACTION: ${{ github.event.inputs.min_granule_fraction || '0' }}
           RETAIN_DAYS: ${{ github.event.inputs.retain_days || '7' }}
           COLLECTION_ID: ${{ github.event.inputs.collection_id || 'frozon-s1-ew-hh-daily' }}
+          CDSE_SECRET_NAME: ${{ github.event.inputs.cdse_secret_name || 'cdse-creds-frozon' }}
         run: python scripts/submit_s1grd_pipeline.py

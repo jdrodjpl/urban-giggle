@@ -3,17 +3,25 @@
 
 Same shape as scripts/submit_cog_pipeline.py:
 
-  1. CMR-walk back day-by-day across BOTH SENTINEL-1A_DP_GRD_MEDIUM and
-     SENTINEL-1C_DP_GRD_MEDIUM, counting matching `*_1SDH_*` granules
-     per date until we have MOSAIC_LAST_N_COMPLETE_DAYS + 1 dates with
-     data.
-  2. Drop the newest date (potentially still landing) plus any date
-     below MIN_GRANULE_FRACTION of the max count.
-  3. Pre-check S3 to skip dates whose COG already exists.
-  4. Submit one `frozon-iss-ingest-s1grd:v1` worker per missing date.
+  1. Walk back day-by-day, counting matching `*_1SDH_*` granules per
+     date on BOTH catalogs: CMR/ASF (SENTINEL-1A_DP_GRD_MEDIUM +
+     SENTINEL-1C_DP_GRD_MEDIUM) and the Copernicus Data Space (CDSE)
+     origin catalog, until we have MOSAIC_LAST_N_COMPLETE_DAYS + 1
+     dates with data.
+  2. Per date, prefer ASF when it has caught up to CDSE (its per-date
+     count reaches CDSE's — counts match exactly once ASF backfills);
+     otherwise submit the worker in CDSE mode. ASF mirrors CDSE with a
+     lag observed to reach ~10 days, so without the CDSE path the most
+     recent week of mosaics simply doesn't exist.
+  3. Drop the newest date (potentially still landing) plus any date
+     below MIN_GRANULES / MIN_GRANULE_FRACTION.
+  4. Pre-check S3 to skip dates whose COG already exists.
+  5. Submit one `frozon-iss-ingest-s1grd` worker per missing date,
+     passing input_source=asf|cdse (+ the CDSE secret name).
 
-The worker re-queries CMR itself for its single date (CMR-self-query
-mode) — keeps the submitJob payload tiny regardless of granule count.
+The worker re-queries the chosen catalog itself for its single date
+(self-query mode) — keeps the submitJob payload tiny regardless of
+granule count.
 
 Retention sweep at the top of the run keeps RETAIN_DAYS most recent
 date folders.
@@ -29,15 +37,28 @@ from datetime import datetime, timedelta, timezone
 
 from maap.maap import MAAP
 
+# cdse.py is written to load standalone (stdlib + requests only) so the
+# runner doesn't drag in the rest of src/'s import chain — see its
+# module docstring. Reusing it here guarantees the runner's per-date
+# counts and the worker's download list apply identical filters.
+sys.path.insert(0, os.path.join(
+    os.path.dirname(os.path.abspath(__file__)), "..", "src", "input_sources"))
+import cdse
+
 DEFAULTS = {
     "MAAP_HOST":                    "api.maap-project.org",
     "WORKER_ALGO_ID":               "frozon-iss-ingest-s1grd",
-    "WORKER_ALGO_VERSION":          "v5",
+    "WORKER_ALGO_VERSION":          "v6",
     "QUEUE":                        "maap-dps-worker-32vcpu-64gb",
     # CMR query — both active S1 satellites.
     "CMR_SHORT_NAMES":              "SENTINEL-1A_DP_GRD_MEDIUM,SENTINEL-1C_DP_GRD_MEDIUM",
     "CMR_BBOX":                     "-180,60,180,90",
     "EDL_SECRET_NAME":              "earthdata-token-frozon",
+    # CDSE fallback for dates ASF hasn't mirrored yet. MAAP secret holds
+    # either `username\npassword` or `client_id=...\nclient_secret=...`
+    # for a dataspace.copernicus.eu account. Empty string disables the
+    # CDSE path (dates only ASF is missing get skipped, as before).
+    "CDSE_SECRET_NAME":             "cdse-creds-frozon",
     # Output. Production is σ⁰ only — set CALIBRATIONS="sigma0,beta0"
     # (env override) and COLLECTION_ID_TEMPLATE="frozon-s1-ew-hh-{calibration}-daily"
     # if/when a consumer asks for β⁰ too. The dual-cal code path is in
@@ -118,10 +139,11 @@ def _maap_s3_client(maap: MAAP):
 # Discovery
 # --------------------------------------------------------------------------
 
-def discover_acquisition_dates(maap: MAAP) -> list[tuple[str, int]]:
-    """Walk back day-by-day across both S1A and S1C collections, summing
-    matching granule counts per date. Returns [(YYYYMMDD, count), ...]
-    newest-first."""
+def discover_acquisition_dates(maap: MAAP) -> list[tuple[str, int, int]]:
+    """Walk back day-by-day, counting matching granules per date on both
+    catalogs: CMR (summed across the S1A/S1C collections) and CDSE.
+    Returns [(YYYYMMDD, cmr_count, cdse_count), ...] newest-first. A
+    date counts as "found" when either catalog has data."""
     import earthaccess
     _login_edl(maap)
 
@@ -135,16 +157,16 @@ def discover_acquisition_dates(maap: MAAP) -> list[tuple[str, int]]:
     today = datetime.now(timezone.utc).date()
     print(f"Walking back from {today.isoformat()} up to {lookback} day(s); "
           f"collecting {target} dates with {filter_pat!r} hits across "
-          f"{short_names}.")
+          f"{short_names} (CMR + CDSE).")
 
     from fnmatch import fnmatch
-    found: list[tuple[str, int]] = []
+    found: list[tuple[str, int, int]] = []
     for offset in range(1, lookback + 1):
         if len(found) >= target:
             break
         day = today - timedelta(days=offset)
         next_day = day + timedelta(days=1)
-        count_this_day = 0
+        cmr_count = 0
         for sn in short_names:
             try:
                 results = earthaccess.search_data(
@@ -163,13 +185,23 @@ def discover_acquisition_dates(maap: MAAP) -> list[tuple[str, int]]:
                 except Exception:
                     continue
                 if fnmatch(granule_ur, filter_pat):
-                    count_this_day += 1
-        if count_this_day > 0:
-            found.append((day.strftime("%Y%m%d"), count_this_day))
-            print(f"  {day.isoformat()}: {count_this_day} matching granule(s) "
+                    cmr_count += 1
+        # A CDSE outage must not take down the ASF path — count as 0 and
+        # let the per-date preference fall back to ASF.
+        try:
+            cdse_count = len(cdse.search_products(
+                short_names, day.isoformat(), next_day.isoformat(),
+                bbox=bbox_tuple, filter_pattern=filter_pat,
+            ))
+        except Exception as e:
+            print(f"  {day.isoformat()} [CDSE]: search failed ({e})")
+            cdse_count = 0
+        if cmr_count > 0 or cdse_count > 0:
+            found.append((day.strftime("%Y%m%d"), cmr_count, cdse_count))
+            print(f"  {day.isoformat()}: cmr={cmr_count} cdse={cdse_count} "
                   f"({len(found)}/{target})")
         else:
-            print(f"  {day.isoformat()}: 0 matching granules")
+            print(f"  {day.isoformat()}: 0 matching granules on either catalog")
 
     return found
 
@@ -228,7 +260,7 @@ def cog_exists_in_s3(s3, date_key: str) -> bool:
 # Submit
 # --------------------------------------------------------------------------
 
-def submit_worker(maap: MAAP, date_key: str):
+def submit_worker(maap: MAAP, date_key: str, source: str = "asf"):
     date_dt = datetime.strptime(date_key, "%Y%m%d")
     this_day = date_dt.strftime("%Y-%m-%d")
     next_day = (date_dt + timedelta(days=1)).strftime("%Y-%m-%d")
@@ -238,6 +270,8 @@ def submit_worker(maap: MAAP, date_key: str):
         "algo_id":                      env("WORKER_ALGO_ID"),
         "version":                      env("WORKER_ALGO_VERSION"),
         "queue":                        env("QUEUE"),
+        "input_source":                 source,
+        "cdse_secret_name":             env("CDSE_SECRET_NAME") if source == "cdse" else "",
         "cmr_short_names":              env("CMR_SHORT_NAMES"),
         "cmr_temporal_start":           this_day,
         "cmr_temporal_end":             next_day,
@@ -278,57 +312,73 @@ def main() -> int:
         print(f"Only {len(available)} acquisition date(s) discovered; need ≥2. Exit.")
         return 1
 
-    newest, newest_count = available[0]
-    print(f"Dropped newest date {newest} ({newest_count} granule(s) — "
-          f"assumed potentially incomplete).")
+    newest, newest_cmr, newest_cdse = available[0]
+    print(f"Dropped newest date {newest} (cmr={newest_cmr} cdse={newest_cdse} "
+          f"granule(s) — assumed potentially incomplete).")
 
-    rest = available[1:]
+    # Per-date source decision. ASF is preferred: once it backfills a
+    # date, its count matches CDSE's exactly, so "caught up" is simply
+    # cmr_count >= cdse_count. Any shortfall means ASF is still
+    # mirroring that date and CDSE is the complete catalog.
+    cdse_secret = env("CDSE_SECRET_NAME")
+    rest = []  # (date, count-for-chosen-source, source)
+    for d, cmr_count, cdse_count in available[1:]:
+        source = "asf" if cmr_count >= cdse_count else "cdse"
+        if source == "cdse" and not cdse_secret:
+            print(f"  {d}: ASF behind (cmr={cmr_count} < cdse={cdse_count}) but "
+                  f"CDSE_SECRET_NAME is unset — falling back to ASF's partial view.")
+            source = "asf"
+        count = cmr_count if source == "asf" else cdse_count
+        rest.append((d, count, source))
+        print(f"  {d}: cmr={cmr_count} cdse={cdse_count} → source={source}")
 
     # Absolute floor first: only near-empty days (failed/partial acquisitions)
     # are dropped; genuinely-sparse-but-real Arctic days survive.
     min_granules = int(env("MIN_GRANULES"))
     if min_granules > 0 and rest:
-        below = [(d, c) for d, c in rest if c < min_granules]
-        rest = [(d, c) for d, c in rest if c >= min_granules]
+        below = [t for t in rest if t[1] < min_granules]
+        rest = [t for t in rest if t[1] >= min_granules]
         if below:
             print(f"Dropped {len(below)} date(s) below MIN_GRANULES={min_granules}:")
-            for d, c in below:
-                print(f"  {d}: {c} granule(s)")
+            for d, c, s in below:
+                print(f"  {d}: {c} granule(s) [{s}]")
 
     # Optional fraction-of-max filter (off by default — see MIN_GRANULES).
     threshold_factor = float(env("MIN_GRANULE_FRACTION"))
     if threshold_factor > 0 and rest:
-        max_count = max(c for _, c in rest)
+        max_count = max(c for _, c, _ in rest)
         floor = max_count * threshold_factor
-        below = [(d, c) for d, c in rest if c < floor]
-        rest = [(d, c) for d, c in rest if c >= floor]
+        below = [t for t in rest if t[1] < floor]
+        rest = [t for t in rest if t[1] >= floor]
         if below:
             print(f"Dropped {len(below)} below-fraction date(s) "
                   f"(< {floor:.0f} = {threshold_factor:.0%} of max {max_count}):")
-            for d, c in below:
-                print(f"  {d}: {c} granule(s)")
+            for d, c, s in below:
+                print(f"  {d}: {c} granule(s) [{s}]")
 
     last_n = int(env("MOSAIC_LAST_N_COMPLETE_DAYS"))
-    candidates = [d for d, _ in rest[:last_n]]
+    candidates = [(d, s) for d, _, s in rest[:last_n]]
     if not candidates:
         print("No candidate dates after filtering. Nothing to do.")
         return 0
 
     s3 = _maap_s3_client(maap)
     to_submit, skipped = [], []
-    for d in candidates:
-        (skipped if cog_exists_in_s3(s3, d) else to_submit).append(d)
+    for d, s in candidates:
+        (skipped if cog_exists_in_s3(s3, d) else to_submit).append((d, s))
     if skipped:
-        print(f"Skipping {len(skipped)} date(s) with existing COG: {skipped}")
+        print(f"Skipping {len(skipped)} date(s) with existing COG: "
+              f"{[d for d, _ in skipped]}")
     if not to_submit:
         print("All candidates already have COGs. Nothing to submit.")
         return 0
-    print(f"Submitting {len(to_submit)} worker(s) for: {to_submit}")
+    print(f"Submitting {len(to_submit)} worker(s) for: "
+          f"{[f'{d}[{s}]' for d, s in to_submit]}")
 
     submitted, failed = [], []
-    for d in to_submit:
+    for d, s in to_submit:
         try:
-            job = submit_worker(maap, d)
+            job = submit_worker(maap, d, source=s)
         except Exception as e:
             print(f"  ✗ {d}: submitJob raised: {e}")
             failed.append(d)
@@ -337,7 +387,7 @@ def main() -> int:
             print(f"  ✗ {d}: submitJob returned no id: {job}")
             failed.append(d)
             continue
-        print(f"  ✓ {d}: {job.id}  status={getattr(job, 'status', '?')}")
+        print(f"  ✓ {d} [{s}]: {job.id}  status={getattr(job, 'status', '?')}")
         submitted.append(job.id)
 
     print(f"\nSummary: {len(submitted)} submitted, {len(failed)} failed, "

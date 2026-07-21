@@ -40,6 +40,7 @@ fi
 
 # Pre-declare all vars.
 input_https_urls=""
+input_source="" cdse_secret_name=""
 cmr_short_names="" cmr_temporal_start="" cmr_temporal_end="" cmr_bbox=""
 filter_pattern=""
 polarization="HH"
@@ -53,10 +54,13 @@ resampling="nearest" overview_resampling="average" overwrite="false"
 
 eval "$(/opt/conda/envs/ingest/bin/python "${root_dir}/.maap/_lib/load_job_params.py" _job.json)"
 filter_pattern="${filter:-${filter_pattern}}"
+input_source="${input_source:-asf}"
 
 echo "=== Parsed parameters ==="
 echo "mosaic_date:               ${mosaic_date}"
 echo "polarization:              ${polarization}"
+echo "input_source:              ${input_source}"
+echo "cdse_secret_name:          ${cdse_secret_name}"
 echo "input_https_urls (len):    ${#input_https_urls}"
 echo "cmr_short_names:           ${cmr_short_names}"
 echo "cmr_temporal:              ${cmr_temporal_start} → ${cmr_temporal_end}"
@@ -86,6 +90,8 @@ else
     exit 1
 fi
 
+args+=(--input-source "${input_source}")
+[[ -n "${cdse_secret_name}" ]]      && args+=(--cdse-secret-name "${cdse_secret_name}")
 args+=(--polarization "${polarization}")
 [[ -n "${mosaic_date}" ]]           && args+=(--mosaic-date "${mosaic_date}")
 [[ -n "${earthdata_token_secret_name}" ]] && args+=(--earthdata-token-secret-name "${earthdata_token_secret_name}")

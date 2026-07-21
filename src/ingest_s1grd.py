@@ -16,14 +16,28 @@ Then for all granules in the day:
 Input is supplied as either:
   --input-https-urls JSON_LIST   # list of asf datapool ZIP URLs
   --cmr-short-name + --cmr-temporal-start/-end + --cmr-bbox + --filter
-                                 # worker re-queries CMR itself (matches
-                                 # the CMR-self-query mode our COG worker
-                                 # uses for daily mosaics)
+                                 # worker re-queries the catalog itself
+                                 # (matches the CMR-self-query mode our
+                                 # COG worker uses for daily mosaics)
+
+Self-query mode consults one of two catalogs, chosen by --input-source:
+  asf  (default) — CMR/ASF via earthaccess, download via asf_search.
+  cdse           — Copernicus Data Space OData catalog + download. Used
+                   by the cron for dates ASF hasn't mirrored yet (ASF
+                   lags the CDSE origin by up to ~10 days). Same CMR
+                   short_names are passed; the platform + product type
+                   are derived from them. The downloaded SAFE ZIPs are
+                   byte-compatible with ASF's, so calibration/mosaic
+                   code is source-agnostic.
 
 Auth: --earthdata-token-secret-name names a MAAP secret holding the EDL
-bearer token. The token has to belong to a user who's authorized the
-"Alaska Satellite Facility Data Access" application on
-https://urs.earthdata.nasa.gov/profile.
+bearer token (required for --input-source=asf). The token has to belong
+to a user who's authorized the "Alaska Satellite Facility Data Access"
+application on https://urs.earthdata.nasa.gov/profile.
+--cdse-secret-name names a MAAP secret holding CDSE OAuth credentials
+(required for --input-source=cdse): either `username\npassword` lines
+(password grant via the public cdse-public client) or
+`client_id=...\nclient_secret=...` lines (client-credentials grant).
 """
 
 from __future__ import annotations
@@ -292,8 +306,17 @@ def main() -> int:
     p.add_argument("--mosaic-date", required=True,
                    help="YYYYMMDD label for the output COG and STAC datetime")
 
-    p.add_argument("--earthdata-token-secret-name", required=True,
-                   help="MAAP secret holding the EDL bearer token")
+    p.add_argument("--input-source", default="asf", choices=["asf", "cdse"],
+                   help="Catalog + download endpoint for self-query mode: "
+                        "asf (CMR/ASF, default) or cdse (Copernicus Data "
+                        "Space — for dates ASF hasn't mirrored yet).")
+
+    p.add_argument("--earthdata-token-secret-name",
+                   help="MAAP secret holding the EDL bearer token "
+                        "(required for --input-source=asf)")
+    p.add_argument("--cdse-secret-name",
+                   help="MAAP secret holding CDSE OAuth credentials "
+                        "(required for --input-source=cdse)")
 
     p.add_argument("--calibrations", default="sigma0",
                    help="Comma-separated list of calibration conventions to emit "
@@ -337,30 +360,82 @@ def main() -> int:
     zip_dir = scratch_dir / "zips"
 
     maap = MaapUtils.get_maap_instance()
-    edl_creds = _resolve_edl_creds(args.earthdata_token_secret_name, maap)
-    logger.info(f"EDL auth via {'token' if 'token' in edl_creds else 'username/password'}")
 
-    # --- 1. Resolve granule URLs ---
+    # Per-mode credential requirements, checked before any catalog call
+    # so a missing secret fails with a clear message instead of a deep
+    # login traceback.
+    if args.input_source == "cdse":
+        if args.input_https_urls:
+            print("--input-source=cdse only works in self-query mode "
+                  "(--cmr-short-name), not with --input-https-urls",
+                  file=sys.stderr)
+            return 6
+        if not args.cdse_secret_name:
+            print("--input-source=cdse requires --cdse-secret-name",
+                  file=sys.stderr)
+            return 6
+    elif not args.earthdata_token_secret_name:
+        print("--input-source=asf requires --earthdata-token-secret-name",
+              file=sys.stderr)
+        return 6
+
+    # --- 1. Resolve granules + a source-appropriate fetch function.
+    # Both sources hand `process_granule` the same classic SAFE ZIP, so
+    # everything past the download is source-agnostic.
     if args.input_https_urls:
-        urls = json.loads(args.input_https_urls)
+        items = json.loads(args.input_https_urls)
     else:
         if not (args.cmr_short_name and args.cmr_temporal_start
                 and args.cmr_temporal_end and args.cmr_bbox):
             print("--cmr-short-name with --cmr-temporal-* and --cmr-bbox required "
                   "when not passing --input-https-urls", file=sys.stderr)
             return 6
-        urls = cmr_granule_urls(
-            short_names=args.cmr_short_name,
-            temporal_start=args.cmr_temporal_start,
-            temporal_end=args.cmr_temporal_end,
-            bbox=args.cmr_bbox,
-            filter_pattern=args.filter_pattern,
-            earthdata_token_secret_name=args.earthdata_token_secret_name,
-            maap_instance=maap,
-        )
-    if not urls:
-        raise RuntimeError("No S1 GRD granule URLs to process")
-    logger.info(f"{len(urls)} granule(s) to process")
+        if args.input_source == "cdse":
+            from input_sources import cdse
+            items = cdse.search_products(
+                short_names=args.cmr_short_name,
+                temporal_start=args.cmr_temporal_start,
+                temporal_end=args.cmr_temporal_end,
+                bbox=[float(c) for c in args.cmr_bbox.split(",")],
+                filter_pattern=args.filter_pattern,
+            )
+        else:
+            items = cmr_granule_urls(
+                short_names=args.cmr_short_name,
+                temporal_start=args.cmr_temporal_start,
+                temporal_end=args.cmr_temporal_end,
+                bbox=args.cmr_bbox,
+                filter_pattern=args.filter_pattern,
+                earthdata_token_secret_name=args.earthdata_token_secret_name,
+                maap_instance=maap,
+            )
+    if not items:
+        raise RuntimeError("No S1 GRD granules to process")
+
+    if args.input_source == "cdse":
+        from input_sources import cdse
+        cdse_creds = cdse.resolve_cdse_creds(args.cdse_secret_name, maap)
+        cdse_auth = cdse.CDSEAuth(cdse_creds)
+        logger.info("CDSE auth via "
+                    + ("client credentials" if "client_secret" in cdse_creds
+                       else "username/password"))
+
+        def fetch(item, dest_dir):
+            return cdse.download_product(item, dest_dir, cdse_auth)
+
+        def label(item):
+            return item["name"]
+    else:
+        edl_creds = _resolve_edl_creds(args.earthdata_token_secret_name, maap)
+        logger.info(f"EDL auth via {'token' if 'token' in edl_creds else 'username/password'}")
+
+        def fetch(item, dest_dir):
+            return download_granule_via_asf(item, dest_dir, edl_creds)
+
+        def label(item):
+            return os.path.basename(item.split("?", 1)[0])
+    logger.info(f"{len(items)} granule(s) to process from source "
+                f"{args.input_source}")
 
     # Resolve calibrations and their per-cal collection-ids.
     calibrations = tuple(c.strip() for c in args.calibrations.split(",") if c.strip())
@@ -401,9 +476,9 @@ def main() -> int:
     # Process one ZIP at a time, unlink after, and collect per-calibration
     # geocoded tiffs in parallel lists.
     geocoded_by_cal: dict = {c: [] for c in calibrations}
-    for i, url in enumerate(urls, 1):
-        logger.info(f"[{i}/{len(urls)}] {os.path.basename(url.split('?',1)[0])}")
-        zip_path = download_granule_via_asf(url, zip_dir, edl_creds)
+    for i, item in enumerate(items, 1):
+        logger.info(f"[{i}/{len(items)}] {label(item)}")
+        zip_path = fetch(item, zip_dir)
         try:
             results = process_granule(
                 zip_path, scratch_dir, args.polarization,

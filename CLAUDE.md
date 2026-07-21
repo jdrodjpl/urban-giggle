@@ -69,6 +69,22 @@ how many fresh builds we pushed — see PIPELINE_TEMPLATE.md gotchas).
    COG already exists; submits one `frozon-iss-ingest-<source>:vN` worker
    per remaining date. Also runs a retention sweep first, keeping the
    `RETAIN_DAYS` most recent date folders and pruning the rest.
+
+   **S1 GRD only — hybrid ASF/CDSE source.** ASF mirrors the Copernicus
+   Data Space (CDSE) origin catalog with a lag observed to reach ~10
+   days, so the S1 cron counts each date on both catalogs
+   (`input_sources/cdse.py` does the CDSE side, unauthenticated) and
+   picks per date: ASF once its count reaches CDSE's (they match exactly
+   after backfill), else CDSE. The worker gets `input_source=asf|cdse`
+   plus `cdse_secret_name` and self-queries the chosen catalog. CDSE
+   raw listings carry a 2× `_COG.SAFE` duplicate of every acquisition —
+   `cdse.search_products` always excludes those, keeping the classic
+   SAFE ZIPs that are byte-compatible with ASF's, so calibration/mosaic
+   code is source-agnostic. The `cdse-creds-frozon` MAAP secret holds
+   either `username\npassword` (dataspace.copernicus.eu account,
+   password grant via the public `cdse-public` client) or
+   `client_id=...\nclient_secret=...` lines. Unset `CDSE_SECRET_NAME`
+   disables the CDSE path (behaves like the old ASF-only cron).
 2. **Worker** (`ingest_<source>.py`) — downloads source granules, applies
    any source-specific processing (calibration, reprojection, ZIP
    unwrapping…), uses `cog_helpers.mosaic_tiffs` + `convert_to_cog_lowmem`
@@ -215,6 +231,10 @@ Zarr: S3 inputs → worker (download existing Zarr → fresh/append/rebuild
   - `base.py`        — `InputRef` + `InputSource` protocol
   - `s3_prefix.py`   — S3 prefix listing
   - `cmr_tiff.py`    — earthaccess-backed CMR getter + EDL login helper
+  - `cdse.py`        — Copernicus Data Space OData search + OAuth + download.
+                       Stdlib+requests only, no relative imports — the S1
+                       cron loads it standalone (sys.path onto this dir)
+                       to share the exact filter semantics with the worker
   - `__init__.py`    — `make_source(args)` factory + `ensure_edl_login`
 
 ### MAAP configs
