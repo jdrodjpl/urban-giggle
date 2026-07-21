@@ -127,6 +127,16 @@ OVR_RESAMPLING = "average"     # overview build
 # (full resolution would be ~850k divIcon markers in MMGIS — a browser-killer).
 ARROW_STRIDE = 15
 
+# Pre-rendered glyph rasters (the GIBS/Worldview-style presentation): thin,
+# anti-aliased, speed-colored quiver arrows with length proportional to speed,
+# burned into transparent RGBA COGs served through the standard tile path.
+# Glyphs are screen-scale entities, so one raster per zoom band:
+#   (arrow spacing m, raster m/px)  — band A serves ~z0-3, band B ~z3-5.
+# Above that, the interactive full-res geodataset layer takes over.
+GLYPH_BANDS = [(160000.0, 4096.0), (40000.0, 1024.0)]
+GLYPH_MAX_SPEED = 25.0     # m/s at which shaft length = 80% of arrow spacing
+GLYPH_CLIM = (0.0, 20.0)   # colormap range, matches the layer legend
+
 
 # --------------------------------------------------------------------------
 # Retrieve
@@ -287,6 +297,87 @@ def warp_to_3413(in_tiff: Path, out_tiff: Path) -> Path:
 # --------------------------------------------------------------------------
 # wind_arrows: decimated speed/bearing point GeoJSON from the u + v grids
 # --------------------------------------------------------------------------
+
+def render_wind_glyphs(u_tiff: Path, v_tiff: Path, out_tiff: Path,
+                       spacing_m: float, px_m: float) -> Path:
+    """Render quiver glyphs (shaft length ∝ speed, colored by speed) from the
+    co-registered EPSG:3413 u/v grids into a transparent RGBA GeoTIFF.
+
+    Drawn in map coordinates with the analytic local basis: in EPSG:3413 the
+    meridians are straight lines through the projection origin, so true north
+    at any point is exactly the unit vector toward (0, 0) — correct at the
+    pole with no small-angle approximations. gdalwarp does not rotate vector
+    components, so u/v remain true-east/true-north m/s."""
+    import matplotlib
+    matplotlib.use("Agg")
+    import matplotlib.pyplot as plt
+
+    with rasterio.open(u_tiff) as usrc, rasterio.open(v_tiff) as vsrc:
+        if usrc.transform != vsrc.transform or usrc.shape != vsrc.shape:
+            raise RuntimeError("u/v grids not co-registered")
+        u = usrc.read(1)
+        v = vsrc.read(1)
+        grid_transform = usrc.transform
+
+    stride = max(1, round(spacing_m / TGT_RES))
+    rows = np.arange(stride // 2, u.shape[0], stride)
+    cols = np.arange(stride // 2, u.shape[1], stride)
+    cgrid, rgrid = np.meshgrid(cols, rows)
+    rs, cs = rgrid.ravel(), cgrid.ravel()
+    us, vs = u[rs, cs], v[rs, cs]
+    valid = np.isfinite(us) & np.isfinite(vs)
+    rs, cs, us, vs = rs[valid], cs[valid], us[valid], vs[valid]
+
+    xs, ys = rasterio.transform.xy(grid_transform, rs, cs)
+    xs, ys = np.asarray(xs), np.asarray(ys)
+
+    # Local true-north/east unit vectors in map space (analytic; pole-safe).
+    r = np.hypot(xs, ys)
+    r[r == 0] = 1.0
+    nx, ny = -xs / r, -ys / r
+    ex, ey = ny, -nx
+
+    scale = 0.8 * spacing_m / GLYPH_MAX_SPEED   # map meters per (m/s)
+    dx = (us * ex + vs * nx) * scale
+    dy = (us * ey + vs * ny) * scale
+    speed = np.hypot(us, vs)
+
+    width_px = int(round((TGT_TE[2] - TGT_TE[0]) / px_m))
+    height_px = int(round((TGT_TE[3] - TGT_TE[1]) / px_m))
+    fig = plt.figure(figsize=(width_px / 100.0, height_px / 100.0), dpi=100)
+    ax = fig.add_axes([0, 0, 1, 1])
+    ax.set_xlim(TGT_TE[0], TGT_TE[2])
+    ax.set_ylim(TGT_TE[1], TGT_TE[3])
+    ax.axis("off")
+    fig.patch.set_alpha(0)
+    ax.patch.set_alpha(0)
+    ax.quiver(xs, ys, dx, dy, speed,
+              cmap="Spectral_r", clim=GLYPH_CLIM,
+              angles="xy", scale_units="xy", scale=1.0,
+              units="dots", width=1.3,
+              headwidth=4, headlength=5, headaxislength=4.5)
+    fig.canvas.draw()
+    rgba = np.asarray(fig.canvas.buffer_rgba()).copy()
+    plt.close(fig)
+
+    h, w = rgba.shape[:2]
+    out_tiff.parent.mkdir(parents=True, exist_ok=True)
+    transform = Affine((TGT_TE[2] - TGT_TE[0]) / w, 0, TGT_TE[0],
+                       0, -(TGT_TE[3] - TGT_TE[1]) / h, TGT_TE[3])
+    with rasterio.open(out_tiff, "w", driver="GTiff", height=h, width=w,
+                       count=4, dtype="uint8", crs=TGT_EPSG,
+                       transform=transform, compress="DEFLATE",
+                       tiled=True) as dst:
+        for b in range(4):
+            dst.write(rgba[:, :, b], b + 1)
+        dst.colorinterp = [rasterio.enums.ColorInterp.red,
+                           rasterio.enums.ColorInterp.green,
+                           rasterio.enums.ColorInterp.blue,
+                           rasterio.enums.ColorInterp.alpha]
+    logger.info(f"wind glyphs: {rs.size} arrows @ {spacing_m/1000:.0f} km "
+                f"-> {out_tiff.name} ({w}x{h}px)")
+    return out_tiff
+
 
 def build_wind_arrows(u_tiff: Path, v_tiff: Path, out_geojson: Path,
                       stride: int = ARROW_STRIDE,
@@ -474,6 +565,30 @@ def main() -> int:
                 s3_url = cog_helpers.upload_cog_to_key(
                     pth, args.s3_bucket, s3_key, args.role_arn)
                 logger.info(f"ECMWF wind_arrows uploaded: {s3_url}")
+
+            # Pre-rendered glyph COGs (one per zoom band) for the tile layers.
+            glyph_collection = "frozon-ecmwf-wind-glyphs-daily"
+            for spacing_m, px_m in GLYPH_BANDS:
+                km = int(spacing_m / 1000)
+                raw = render_wind_glyphs(
+                    warped["wind_ew"], warped["wind_ns"],
+                    scratch_dir / "glyphs" / f"glyphs_{km}km_{args.date}.tif",
+                    spacing_m, px_m)
+                cog_path = (scratch_dir / "glyphs" /
+                            f"{glyph_collection}_{args.date}_{km}km_COG.tif")
+                ok, msg = cog_helpers.convert_to_cog_lowmem(
+                    input_file=raw, output_file=cog_path, overwrite=True,
+                    compress="DEFLATE", blocksize=args.blocksize,
+                    max_memory_mb=args.max_memory,
+                    resampling="bilinear", overview_resampling="average")
+                logger.info(msg)
+                if not ok:
+                    return 2
+                s3_key = cog_helpers.build_dated_s3_key(
+                    args.s3_prefix, glyph_collection, item_dt, cog_path.name)
+                s3_url = cog_helpers.upload_cog_to_key(
+                    cog_path, args.s3_bucket, s3_key, args.role_arn)
+                logger.info(f"ECMWF wind glyphs uploaded: {s3_url}")
             return 0
 
         # --- 1. Resolve + retrieve the GRIB ---

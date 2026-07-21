@@ -11,6 +11,8 @@ dependencies:
   - libgdal-grib
   - rasterio
   - numpy
+  # Renders the pre-baked wind-glyph (quiver) RGBA COGs for the tile layers.
+  - matplotlib-base
   - pystac
   - rio-stac
   - fsspec

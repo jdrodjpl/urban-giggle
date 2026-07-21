@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Build script for the ECMWF Open Data near-surface ingest worker.
-# BUILD_BUST=2026-07-07-1  ← bump to force a fresh Docker build.
+# BUILD_BUST=2026-07-21-1  ← bump to force a fresh Docker build.
 #
 # Same lean shape as the OSI SAF worker: anonymous HTTP (no earthaccess/EDL),
 # GRIB-direct via GDAL. Adds the ecmwf-opendata client and the GDAL GRIB plugin.
