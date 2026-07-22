@@ -1,6 +1,6 @@
 algorithm_description: Frozon OSI SAF sea-ice ingest worker — downloads one daily OSI SAF NetCDF (concentration / type / edge) for the Northern Hemisphere from the met.no THREDDS server (anonymous HTTP), extracts the product variable, forces the EPSG:3411 source grid, reprojects to canonical EPSG:3413, writes a COG and STAC, uploads to S3.
 algorithm_name: frozon-iss-ingest-osisaf
-algorithm_version: v1
+algorithm_version: v2
 build_command: urban-giggle/.maap/ingest-osisaf/build.sh
 disk_space: 20GB
 docker_container_url: mas.maap-project.org/root/maap-workspaces/custom_images/maap_base:v4.2.0
