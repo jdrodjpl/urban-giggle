@@ -34,7 +34,7 @@ PRODUCT_COLLECTIONS = {
 DEFAULTS = {
     "MAAP_HOST":                  "api.maap-project.org",
     "WORKER_ALGO_ID":             "frozon-iss-ingest-cmems",
-    "WORKER_ALGO_VERSION":        "v1",
+    "WORKER_ALGO_VERSION":        "v2",
     "QUEUE":                      "maap-dps-worker-8gb",
     # Which products to ingest this run (comma-separated subset).
     "PRODUCTS":                   "ocean_u,ocean_v",
