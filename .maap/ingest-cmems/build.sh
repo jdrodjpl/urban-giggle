@@ -2,7 +2,10 @@
 # Build script for the CMEMS ocean-current ingest worker.
 # BUILD_BUST=2026-07-22-1  ← bump to force a fresh Docker build.
 #   (Re-registering v1 kept serving a stale image missing rioxarray — the
-#   smoke import below can't fail on a real build, so the algo moved to v2.)
+#   smoke import below can't fail on a real build. MAAP keys images per
+#   repo:version and skips the build when that version's image exists, so the
+#   algo moved to v8, a version never used by any algo in this repo. See
+#   PIPELINE_TEMPLATE.md gotcha 16.)
 #
 # Credentialed Copernicus Marine subset (copernicusmarine) + xarray/rioxarray
 # NetCDF->GeoTIFF + gdalwarp/gdal_translate for the warp + COG. No GDAL netCDF

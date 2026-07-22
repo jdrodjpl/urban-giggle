@@ -45,7 +45,7 @@ PRODUCT_FILES = {
 DEFAULTS = {
     "MAAP_HOST":                  "api.maap-project.org",
     "WORKER_ALGO_ID":             "frozon-iss-ingest-osisaf",
-    "WORKER_ALGO_VERSION":        "v2",
+    "WORKER_ALGO_VERSION":        "v7",
     "QUEUE":                      "maap-dps-worker-8gb",
     # Which products to ingest this run (comma-separated subset of conc,type,edge).
     "PRODUCTS":                   "conc,type,edge",

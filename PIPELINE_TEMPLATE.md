@@ -303,6 +303,44 @@ these are baseline.
     algo is *now* (`grep algorithm_version .maap/sample-algo-configs/<algo>.yml`)
     before assuming — versions get bumped during refactors.
 
+15. **Bumping `algorithm_version` in the YAML does NOT register that version.**
+    Editing the YAML only changes what version the *runner* asks MAAP to submit
+    to; MAAP's registry doesn't learn about the new version until you actually
+    call `register_algorithm_from_yaml_file`. Otherwise the runner submits to
+    a version MAAP has never heard of and gets exactly this error:
+
+        Failed to submit job of type job-<algo>:<vN>.
+        Exception Message: 'NoneType' object has no attribute 'get'
+
+    Every YAML version bump is a **two-step** operation: (1) edit + commit +
+    push to `main`, (2) push to the matching `vN` branch, (3) `register_algorithm_from_yaml_file`
+    from Jupyter. Skip (3) and every runner submit for `:vN` fails with the
+    NoneType error. Bit us at v2→v3 and v3→v4 for the S1 GRD worker.
+
+16. **One image per repo:version, shared across ALL algos — and MAAP skips
+    the build if that version's image already exists.** The Docker image is
+    keyed by repo + version branch, not by algorithm. Registering
+    `osisaf:v2` after `s1grd:v2` had ever been registered produced a
+    pipeline that concluded "skipped", which `register_and_wait.py` used to
+    report as success — and every `osisaf:v2` job then ran S1 GRD's
+    June-era conda env (no `libgdal-netcdf`, no `rioxarray`). This is also
+    why re-registering `v1` with a bumped `BUILD_BUST` never fixed anything:
+    BUILD_BUST only matters when a build *runs*, and for an existing
+    version image no build ever runs. Corollaries:
+    - A version bump must go to a number **never used by ANY algo in this
+      repo** (check: `git log --all -p -- .maap/sample-algo-configs/ |
+      grep '+algorithm_version'`), and each algo needs its **own** fresh
+      number — two algos bumped to the same new version would share one
+      image and one of them gets the wrong env.
+    - `register_and_wait.py` now treats a "skipped" pipeline as a hard
+      failure for this reason.
+    - The per-algo `environment.yml` files differ, so a shared image is
+      never safe in this repo. (Long-term alternative: one union env for
+      all algos, then sharing becomes harmless — not done.)
+    Bit the OSI-SAF (netCDF plugin) and CMEMS (`rioxarray`) workers on
+    2026-07-22, after two BUILD_BUST bumps and a v1→v2 bump all failed to
+    dislodge the stale image.
+
 ## Patterns worth knowing
 
 These aren't gotchas but they save time:

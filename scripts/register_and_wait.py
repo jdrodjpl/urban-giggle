@@ -122,8 +122,15 @@ def register_and_wait(maap, yml_path: str, timeout_s: int = 1800) -> bool:
                   file=sys.stderr)
             return False
         if status == "skipped":
-            print(f"  ✓ Build skipped (image reused)", flush=True)
-            return True
+            print(f"  ✗ Build SKIPPED — an image for this repo:version already "
+                  f"exists and MAAP reused it instead of building.", file=sys.stderr)
+            print(f"    MAAP images are keyed per repo VERSION BRANCH and shared "
+                  f"across every algo registered at that version, so a reused "
+                  f"image almost certainly carries another algo's (or an older) "
+                  f"conda env. Bump algorithm_version to a number NEVER used by "
+                  f"ANY algo in this repo, push the matching branch, re-register.",
+                  file=sys.stderr)
+            return False
 
         # If we keep getting 'unknown' (HTML scraping not finding the badge),
         # bail to manual confirmation rather than hanging forever.

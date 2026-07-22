@@ -3,8 +3,11 @@
 # BUILD_BUST=2026-07-22-1  ← bump to force a fresh Docker build.
 #   (Deployed v1 ran new worker code on an old conda env that cache-hit the
 #   libgdal-netcdf-less layer; bumping forces conda env create/update to re-run.
-#   Re-registering under the same v1 tag kept serving the stale image, so the
-#   algo is now registered as v2 — bump this alongside any future re-register.)
+#   NOTE: BUILD_BUST only matters when a build actually runs. MAAP keys images
+#   per repo:version and *skips the build entirely* when that version's image
+#   exists — v1 and v2 both served stale images (v2 was s1grd's June image).
+#   To force a rebuild, bump algorithm_version to a number never used by ANY
+#   algo in this repo. See PIPELINE_TEMPLATE.md gotcha 16.)
 #
 # Leaner env than the OPERA/S1 workers: OSI SAF is anonymous HTTP (no
 # earthaccess/asf-search/EDL) and NetCDF-direct via GDAL (no scipy
